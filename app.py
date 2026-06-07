@@ -310,7 +310,7 @@ if page == "📊 数据导入与管理":
                         )
                     
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
                     
                     col_exp1, col_exp2 = st.columns(2)
                     with col_exp1:
@@ -483,7 +483,7 @@ elif page == "📐 速度模型定义":
                                     cax=ax_cbar, orientation='horizontal')
                     cb.set_label('速度 (m/s)', fontsize=8)
                     buf_cbar = figure_to_bytes(fig_cbar)
-                    st.image(buf_cbar, use_column_width=True)
+                    st.image(buf_cbar, use_container_width=True)
                     plt.close(fig_cbar)
                     
                     st.info(f"当前画笔速度: **{paint_v:.0f} m/s**")
@@ -749,7 +749,7 @@ elif page == "📐 速度模型定义":
                 title="速度模型"
             )
             buf = figure_to_bytes(fig)
-            st.image(buf, use_column_width=True)
+            st.image(buf, use_container_width=True)
             
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
@@ -898,7 +898,7 @@ elif page == "🔊 正演模拟":
                         cmap='seismic'
                     )
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
             
             with tab_seis:
                 display_mode = st.radio("显示方式", ["变面积图", "Wiggle 波形图"], horizontal=True)
@@ -915,7 +915,7 @@ elif page == "🔊 正演模拟":
                             title="合成地震记录"
                         )
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
                 
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1:
@@ -932,7 +932,7 @@ elif page == "🔊 正演模拟":
                 ax.set_title(f'{source_type.capitalize()} 子波 (主频: {source_freq} Hz)')
                 ax.grid(True, alpha=0.3)
                 buf_wavelet = figure_to_bytes(fig_wavelet)
-                st.image(buf_wavelet, use_column_width=True)
+                st.image(buf_wavelet, use_container_width=True)
             
             with tab_compare:
                 st.subheader("📊 数据对比与残差分析")
@@ -1004,7 +1004,7 @@ elif page == "🔊 正演模拟":
                                 title=f"观测数据 vs 合成数据 - 第{trace_idx + 1}道"
                             )
                             buf_compare = figure_to_bytes(fig_compare)
-                            st.image(buf_compare, use_column_width=True)
+                            st.image(buf_compare, use_container_width=True)
                             
                             col_dl1, col_dl2 = st.columns(2)
                             with col_dl1:
@@ -1094,7 +1094,7 @@ elif page == "🔊 正演模拟":
                             
                             plt.tight_layout()
                             buf_gather = figure_to_bytes(fig_gather)
-                            st.image(buf_gather, use_column_width=True)
+                            st.image(buf_gather, use_container_width=True)
                             
                             col_dl1, col_dl2 = st.columns(2)
                             with col_dl1:
@@ -1127,7 +1127,7 @@ elif page == "🔊 正演模拟":
                             cbar.set_label('残差振幅')
                             plt.tight_layout()
                             buf_res = figure_to_bytes(fig_res)
-                            st.image(buf_res, use_column_width=True)
+                            st.image(buf_res, use_container_width=True)
                             
                             col_dl1, col_dl2 = st.columns(2)
                             with col_dl1:
@@ -1159,7 +1159,7 @@ elif page == "🔊 正演模拟":
                     ax.grid(True, alpha=0.3)
                     plt.tight_layout()
                     buf_corr = figure_to_bytes(fig_corr)
-                    st.image(buf_corr, use_column_width=True)
+                    st.image(buf_corr, use_container_width=True)
                 
                 else:
                     st.info("👆 请先导入观测数据，或点击上方按钮生成模拟观测数据进行对比")
@@ -1286,7 +1286,7 @@ elif page == "⏱️ 旅行时计算":
                             title=f"旅行时场 - 震源{source_idx + 1}"
                         )
                         buf = figure_to_bytes(fig)
-                        st.image(buf, use_column_width=True)
+                        st.image(buf, use_container_width=True)
                 else:
                     st.info("直射线追踪方法不显示旅行时场")
             
@@ -1322,7 +1322,7 @@ elif page == "⏱️ 旅行时计算":
                         ax.invert_yaxis()
                         
                         buf = figure_to_bytes(fig)
-                        st.image(buf, use_column_width=True)
+                        st.image(buf, use_container_width=True)
                     
                     st.subheader("旅行时数据")
                     tt_data = []
@@ -1381,7 +1381,7 @@ elif page == "🔄 反演算法":
         with st.expander("📊 预设方案对比"):
             fig_preset = plot_preset_comparison(PRESET_SCHEMES)
             buf_preset = figure_to_bytes(fig_preset)
-            st.image(buf_preset, use_column_width=True)
+            st.image(buf_preset, use_container_width=True)
         
         st.markdown("---")
         
@@ -1808,7 +1808,7 @@ elif page == "🔄 反演算法":
                     cmap=result_cmap
                 )
                 buf = figure_to_bytes(fig)
-                st.image(buf, use_column_width=True)
+                st.image(buf, use_container_width=True)
             
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
@@ -1828,7 +1828,7 @@ elif page == "🔄 反演算法":
                     ncols=min(4, len(result.ray_coverage_density))
                 )
                 buf_ray = figure_to_bytes(fig_ray)
-                st.image(buf_ray, use_column_width=True)
+                st.image(buf_ray, use_container_width=True)
             
             if st.button("应用反演结果到速度模型", key="ms_apply"):
                 new_model = GridModel(
@@ -1864,7 +1864,7 @@ elif page == "🔄 反演算法":
                     cmap=result_cmap
                 )
                 buf = figure_to_bytes(fig)
-                st.image(buf, use_column_width=True)
+                st.image(buf, use_container_width=True)
             
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
@@ -1908,7 +1908,7 @@ elif page == "🔄 反演算法":
                         cmap_std='hot'
                     )
                     buf_unc = figure_to_bytes(fig_unc)
-                    st.image(buf_unc, use_column_width=True)
+                    st.image(buf_unc, use_container_width=True)
                 
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1:
@@ -1941,7 +1941,7 @@ elif page == "🔄 反演算法":
                         cmap='plasma'
                     )
                     buf_res = figure_to_bytes(fig_res)
-                    st.image(buf_res, use_column_width=True)
+                    st.image(buf_res, use_container_width=True)
                 
                 col_dl3, col_dl4 = st.columns(2)
                 with col_dl3:
@@ -1982,7 +1982,7 @@ elif page == "📈 频率域处理":
                     title=f"第 {trace_idx + 1} 道频谱"
                 )
                 buf = figure_to_bytes(fig)
-                st.image(buf, use_column_width=True)
+                st.image(buf, use_container_width=True)
             
             st.subheader("平均频谱")
             
@@ -2003,7 +2003,7 @@ elif page == "📈 频率域处理":
                 ax.grid(True, alpha=0.3)
                 
                 buf_avg = figure_to_bytes(fig_avg)
-                st.image(buf_avg, use_column_width=True)
+                st.image(buf_avg, use_container_width=True)
             
             peak_freq = avg_spec['frequencies'][np.argmax(avg_spec['amplitude_mean'])]
             st.info(f"频谱主频: {peak_freq:.1f} Hz")
@@ -2100,7 +2100,7 @@ elif page == "📈 频率域处理":
                     
                     plt.tight_layout()
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
                 
                 st.subheader("处理后剖面")
                 with st.spinner("绘制剖面..."):
@@ -2115,7 +2115,7 @@ elif page == "📈 频率域处理":
                             title='滤波后地震剖面'
                         )
                     buf_section = figure_to_bytes(fig_section)
-                    st.image(buf_section, use_column_width=True)
+                    st.image(buf_section, use_container_width=True)
         
         with tab3:
             st.subheader("预测反褶积")
@@ -2192,7 +2192,7 @@ elif page == "📈 频率域处理":
                     
                     plt.tight_layout()
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
 
 elif page == "📡 叠加处理":
     st.header("📡 叠加处理")
@@ -2290,7 +2290,7 @@ elif page == "📡 叠加处理":
                     else:
                         fig = plot_seismic_wiggle(cdp_traces, time, title=f"CDP {cdp_number} 原始道集")
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
                 
                 fig_offset, ax = plt.subplots(figsize=(12, 4))
                 ax.plot(cdp_offsets, 'o-')
@@ -2299,7 +2299,7 @@ elif page == "📡 叠加处理":
                 ax.set_title('炮检距分布')
                 ax.grid(True, alpha=0.3)
                 buf_offset = figure_to_bytes(fig_offset)
-                st.image(buf_offset, use_column_width=True)
+                st.image(buf_offset, use_container_width=True)
             
             with tab2:
                 st.subheader("🎯 速度谱 - 交互拾取叠加速度")
@@ -2423,7 +2423,7 @@ elif page == "📡 叠加处理":
                         cbar.set_label('Semblance 相干值', fontsize=10)
                         plt.tight_layout()
                         buf_spec = figure_to_bytes(fig_spec)
-                        st.image(buf_spec, use_column_width=True, caption=f"拾取点: t={pick_time:.3f}s, v={pick_velocity:.0f}m/s, 相干值={semblance_value:.3f}")
+                        st.image(buf_spec, use_container_width=True, caption=f"拾取点: t={pick_time:.3f}s, v={pick_velocity:.0f}m/s, 相干值={semblance_value:.3f}")
                 
                 with col_pick2:
                     st.markdown("##### 📋 已拾取点列表")
@@ -2496,7 +2496,7 @@ elif page == "📡 叠加处理":
                         ax.grid(True, alpha=0.3)
                         ax.invert_yaxis()
                         buf_vfunc = figure_to_bytes(fig_vfunc)
-                        st.image(buf_vfunc, use_column_width=True)
+                        st.image(buf_vfunc, use_container_width=True)
                         
                         if st.button("✨ 应用速度函数到NMO校正", type="primary", use_container_width=True):
                             result['velocity_function'] = st.session_state.velocity_function
@@ -2545,7 +2545,7 @@ elif page == "📡 叠加处理":
                             title='NMO校正后道集'
                         )
                     buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    st.image(buf, use_container_width=True)
                 
                 st.subheader("拉伸切除")
                 fig_mute, ax = plt.subplots(figsize=(10, 4))
@@ -2555,7 +2555,7 @@ elif page == "📡 叠加处理":
                 ax.set_ylabel('时间 (s)')
                 ax.set_title('切除掩模 (白色=有效)')
                 buf_mute = figure_to_bytes(fig_mute)
-                st.image(buf_mute, use_column_width=True)
+                st.image(buf_mute, use_container_width=True)
             
             with tab4:
                 st.subheader("CDP叠加结果")
@@ -2587,7 +2587,7 @@ elif page == "📡 叠加处理":
                 
                 plt.tight_layout()
                 buf_stack = figure_to_bytes(fig_stack)
-                st.image(buf_stack, use_column_width=True)
+                st.image(buf_stack, use_container_width=True)
                 
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1:
@@ -2826,9 +2826,9 @@ elif page == "✅ 反演质量控制":
                 "线性梯度介质基准测试": BenchmarkScenarios.create_gradient
             }
 
-            max_iter = st.number_input("最大迭代次数", 10, 500, 100, 10)
-            reg_param = st.number_input("正则化系数", 0.0001, 1.0, 0.001, format="%.4f")
-            conv_thresh = st.number_input("收敛阈值", 1e-8, 1e-2, 1e-6, format="%.1e")
+            max_iter = st.number_input("最大迭代次数", 10, 1000, 300, 10)
+            reg_param = st.number_input("正则化系数", 0.0001, 10.0, 0.15, format="%.4f")
+            conv_thresh = st.number_input("收敛阈值", 1e-15, 1e-2, 1e-12, format="%.1e")
 
         with col_scenario2:
             st.markdown("#### 场景说明")
@@ -2956,7 +2956,7 @@ elif page == "✅ 反演质量控制":
 
                 plt.tight_layout()
                 buf_compare = figure_to_bytes(fig_compare)
-                st.image(buf_compare, use_column_width=True)
+                st.image(buf_compare, use_container_width=True)
 
             with col_viz2:
                 st.markdown("#### 误差统计")
@@ -2985,7 +2985,7 @@ elif page == "✅ 反演质量控制":
 
                 plt.tight_layout()
                 buf_stats = figure_to_bytes(fig_stats)
-                st.image(buf_stats, use_column_width=True)
+                st.image(buf_stats, use_container_width=True)
 
             st.markdown("---")
             st.subheader("📋 详细误差分析")
@@ -3184,7 +3184,7 @@ elif page == "✅ 反演质量控制":
 
                 plt.tight_layout()
                 buf_conv = figure_to_bytes(fig_conv)
-                st.image(buf_conv, use_column_width=True)
+                st.image(buf_conv, use_container_width=True)
 
                 if conv_result.details.get('non_monotonic_points'):
                     st.warning(f"⚠️ 检测到 {len(conv_result.details['non_monotonic_points'])} 个非单调迭代点，"
@@ -3213,9 +3213,9 @@ elif page == "✅ 反演质量控制":
                 "梯度介质": BenchmarkScenarios.create_gradient
             }
 
-            base_max_iter = st.number_input("基准迭代次数", 10, 200, 50, 10, key="sens_iter")
-            base_reg = st.number_input("基准正则化系数", 0.0001, 1.0, 0.01, format="%.4f", key="sens_reg")
-            base_conv = st.number_input("基准收敛阈值", 1e-8, 1e-2, 1e-5, format="%.1e", key="sens_conv")
+            base_max_iter = st.number_input("基准迭代次数", 10, 500, 300, 10, key="sens_iter")
+            base_reg = st.number_input("基准正则化系数", 0.0001, 10.0, 0.15, format="%.4f", key="sens_reg")
+            base_conv = st.number_input("基准收敛阈值", 1e-15, 1e-2, 1e-12, format="%.1e", key="sens_conv")
 
         with sens_col2:
             st.markdown("#### 扫描参数")
@@ -3320,7 +3320,7 @@ elif page == "✅ 反演质量控制":
 
             plt.tight_layout()
             buf_heatmap = figure_to_bytes(fig_heatmap)
-            st.image(buf_heatmap, use_column_width=True)
+            st.image(buf_heatmap, use_container_width=True)
 
             st.markdown("---")
             st.subheader("📈 一维敏感性曲线")
@@ -3366,7 +3366,7 @@ elif page == "✅ 反演质量控制":
 
             plt.tight_layout()
             buf_sens_curves = figure_to_bytes(fig_sens_curves)
-            st.image(buf_sens_curves, use_column_width=True)
+            st.image(buf_sens_curves, use_container_width=True)
 
     with qc_tab4:
         st.subheader("🔬 回归测试框架")

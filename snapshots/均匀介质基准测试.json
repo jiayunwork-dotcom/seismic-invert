@@ -1,0 +1,27 @@
+{
+  "test_name": "\u5747\u5300\u4ecb\u8d28\u57fa\u51c6\u6d4b\u8bd5",
+  "scenario_type": "homogeneous",
+  "timestamp": 1780832145.9233322,
+  "parameters": {
+    "max_iterations": 100,
+    "convergence_threshold": 1e-06,
+    "regularization": 0.001,
+    "inversion_type": "traveltime",
+    "frequency_scales": [
+      5,
+      10,
+      20,
+      30
+    ],
+    "update_callback": null,
+    "verbose": false
+  },
+  "metrics": {
+    "absolute_error": 204.53731387491345,
+    "relative_error": 0.10226865693745674,
+    "final_objective": 0.0008950949265259791,
+    "iterations": 100,
+    "converged": false
+  },
+  "hash": "8bf109179d811fc0a97294977bd94e84"
+}

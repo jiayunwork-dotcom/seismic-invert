@@ -37,6 +37,7 @@ def lsqr_solve(A: np.ndarray, b: np.ndarray, lambda_reg: float = 0.01,
                max_iter: int = 100, tol: float = 1e-6) -> np.ndarray:
     """
     LSQR solver for linear systems with regularization.
+    Numerically stable version with proper scaling.
     
     Parameters:
     - A: Design matrix (m, n)
@@ -48,57 +49,80 @@ def lsqr_solve(A: np.ndarray, b: np.ndarray, lambda_reg: float = 0.01,
     Returns:
     x: Solution vector (n,)
     """
+    import warnings
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    
     m, n = A.shape
+    
+    if m == 0 or n == 0:
+        return np.zeros(n)
+    
+    b_scale = np.max(np.abs(b))
+    if b_scale < 1e-10:
+        b_scale = 1.0
+    b_norm = b / b_scale
     
     col_scales = np.sqrt(np.sum(A**2, axis=0))
     col_scales = np.maximum(col_scales, 1e-10)
-    A_scaled = A / col_scales
+    row_scales = np.sqrt(np.sum(A**2, axis=1))
+    row_scales = np.maximum(row_scales, 1e-10)
     
-    A_reg = np.vstack([A_scaled, lambda_reg * np.eye(n)])
-    b_reg = np.hstack([b, np.zeros(n)])
+    A_scaled = (A / row_scales[:, np.newaxis]) / col_scales
+    b_scaled = b_norm / row_scales
     
-    x_scaled = np.zeros(n)
+    x_scaled = np.zeros(n, dtype=np.float64)
     
-    r = b_reg - A_reg @ x_scaled
-    p = A_reg.T @ r
+    r = b_scaled - A_scaled @ x_scaled
+    s = A_scaled.T @ r + lambda_reg * x_scaled
+    
+    u = r.copy()
+    p = s.copy()
+    
     r_norm = np.dot(r, r)
-    p_norm = np.dot(p, p)
+    s_norm = np.dot(s, s)
     
-    if not np.isfinite(r_norm) or not np.isfinite(p_norm):
+    if not np.isfinite(r_norm) or not np.isfinite(s_norm):
+        return np.zeros(n)
+    
+    if r_norm < 1e-30 or s_norm < 1e-30:
         return np.zeros(n)
     
     for i in range(max_iter):
-        Ap = A_reg @ p
-        Ap_norm_sq = np.dot(Ap, Ap)
+        Ap = A_scaled @ p
+        Ap_norm_sq = np.dot(Ap, Ap) + lambda_reg * np.dot(p, p)
         
-        if not np.isfinite(Ap_norm_sq) or Ap_norm_sq < 1e-20:
+        if not np.isfinite(Ap_norm_sq) or Ap_norm_sq < 1e-30:
             break
         
-        alpha = p_norm / Ap_norm_sq
+        alpha = s_norm / Ap_norm_sq
         
-        if not np.isfinite(alpha):
+        if not np.isfinite(alpha) or abs(alpha) > 1e10:
             break
         
         x_scaled = x_scaled + alpha * p
         r = r - alpha * Ap
         
-        r_new_norm = np.dot(r, r)
+        s_new = A_scaled.T @ r + lambda_reg * x_scaled
         
-        if not np.isfinite(r_new_norm):
+        r_new_norm = np.dot(r, r)
+        s_new_norm = np.dot(s_new, s_new)
+        
+        if not np.isfinite(r_new_norm) or not np.isfinite(s_new_norm):
             break
         
-        beta = r_new_norm / r_norm if r_norm > 1e-20 else 0.0
+        if s_norm < 1e-30:
+            break
+            
+        beta = s_new_norm / s_norm
         
         if not np.isfinite(beta):
             beta = 0.0
         
-        p = A_reg.T @ r + beta * p
+        p = s_new + beta * p
+        s = s_new
         
         r_norm = r_new_norm
-        p_norm = np.dot(p, p)
-        
-        if not np.isfinite(p_norm):
-            break
+        s_norm = s_new_norm
         
         if np.sqrt(r_norm) < tol:
             break
@@ -106,10 +130,9 @@ def lsqr_solve(A: np.ndarray, b: np.ndarray, lambda_reg: float = 0.01,
     if not np.all(np.isfinite(x_scaled)):
         return np.zeros(n)
     
-    x = x_scaled / col_scales
+    x = x_scaled / col_scales * b_scale
     
-    if not np.all(np.isfinite(x)):
-        return np.zeros(n)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     
     return x
 
@@ -122,12 +145,20 @@ def build_traveltime_sensitivity(travel_time: np.ndarray, velocity: np.ndarray,
     Build sensitivity matrix for travel time tomography.
     
     Uses ray paths to compute Fréchet derivatives.
+    Numerically stable version with proper scaling.
     """
+    import warnings
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    
     nz, nx = velocity.shape
     n_data = len(receiver_idx)
     n_model = nz * nx
     
-    A = lil_matrix((n_data, n_model))
+    v_clamped = np.clip(velocity, 500.0, 10000.0)
+    
+    rows = []
+    cols = []
+    vals = []
     
     for data_idx, (rx, rz) in enumerate(receiver_idx):
         ray = trace_ray_grid(travel_time, source_idx[0], source_idx[1], rx, rz, dx, dz)
@@ -149,12 +180,24 @@ def build_traveltime_sensitivity(travel_time: np.ndarray, velocity: np.ndarray,
             zi = min(max(zi, 0), nz - 1)
             
             seg_length = np.sqrt((x2 - x1)**2 + (z2 - z1)**2)
-            v = velocity[zi, xi]
+            v = v_clamped[zi, xi]
             
             model_idx = zi * nx + xi
-            A[data_idx, model_idx] += -seg_length / (v**2)
+            sens = -seg_length / (v * v)
+            
+            if np.isfinite(sens) and abs(sens) > 1e-20:
+                rows.append(data_idx)
+                cols.append(model_idx)
+                vals.append(sens)
     
-    return A.tocsr()
+    if len(rows) == 0:
+        return csr_matrix((n_data, n_model), dtype=np.float64)
+    
+    vals = np.array(vals, dtype=np.float64)
+    
+    A = csr_matrix((vals, (rows, cols)), shape=(n_data, n_model), dtype=np.float64)
+    
+    return A
 
 
 def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
@@ -164,6 +207,7 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
                       params: InversionParams) -> InversionResult:
     """
     Travel time tomography using LSQR.
+    Numerically stable version with improved convergence.
     
     Parameters:
     - initial_velocity: Initial velocity model (nz, nx)
@@ -176,13 +220,16 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
     Returns:
     InversionResult object
     """
+    import warnings
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    
     nz, nx = initial_velocity.shape
     n_model = nz * nx
     n_sources = len(sources)
     n_receivers = len(receivers)
-    n_data = n_sources * n_receivers
     
     current_velocity = initial_velocity.copy().astype(np.float64)
+    current_velocity = np.clip(current_velocity, 1000.0, 8000.0)
     
     objective_history = []
     model_update_history = []
@@ -190,13 +237,21 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
     converged = False
     prev_objective = np.inf
     
+    v_min_true = np.min(initial_velocity)
+    v_max_true = np.max(initial_velocity)
+    v_center = (v_min_true + v_max_true) / 2.0
+    
     for iteration in range(params.max_iterations):
-        all_sensitivities = []
+        all_rows = []
+        all_cols = []
+        all_vals = []
         all_residuals = []
+        row_offset = 0
         
         fmm = FastMarching(current_velocity, dx, dz)
         
         total_residual = 0.0
+        total_valid_data = 0
         
         for source_idx, (sx, sz) in enumerate(sources):
             tau = fmm.solve(sx, sz)
@@ -212,24 +267,35 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
             
             if np.any(valid_mask):
                 residual_valid = residual[valid_mask]
-                A_valid = A_source[valid_mask, :]
-                
-                all_sensitivities.append(A_valid)
-                all_residuals.append(residual_valid)
+                residual_valid = np.clip(residual_valid, -0.5, 0.5)
                 
                 total_residual += np.sum(residual_valid**2)
+                total_valid_data += len(residual_valid)
+                
+                all_residuals.append(residual_valid)
+                
+                A_valid = A_source[valid_mask, :]
+                A_valid = A_valid.tocoo()
+                
+                for i, j, v in zip(A_valid.row, A_valid.col, A_valid.data):
+                    all_rows.append(row_offset + i)
+                    all_cols.append(j)
+                    all_vals.append(v)
+                
+                row_offset += len(residual_valid)
         
-        if not all_sensitivities:
+        if total_valid_data == 0 or len(all_rows) == 0:
             break
         
-        A = lil_matrix((0, n_model))
-        b = np.array([])
+        b = np.concatenate(all_residuals)
         
-        for A_s, res in zip(all_sensitivities, all_residuals):
-            A = lil_matrix(np.vstack([A.toarray(), A_s.toarray()]))
-            b = np.hstack([b, res])
+        A = csr_matrix(
+            (np.array(all_vals, dtype=np.float64), 
+             (np.array(all_rows, dtype=np.int32), np.array(all_cols, dtype=np.int32))),
+            shape=(row_offset, n_model)
+        )
         
-        A = A.tocsr()
+        b_norm = b
         
         objective = 0.5 * total_residual
         objective_history.append(objective)
@@ -242,7 +308,8 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
         
         if params.verbose:
             print(f"Iteration {iteration+1}: Objective = {objective:.6e}, "
-                  f"Relative change = {relative_change:.2e}")
+                  f"Relative change = {relative_change:.2e}, "
+                  f"Velocity range = [{np.min(current_velocity):.1f}, {np.max(current_velocity):.1f}]")
         
         if iteration > 0 and relative_change < params.convergence_threshold:
             converged = True
@@ -252,7 +319,8 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
             params.update_callback(iteration, objective, relative_change, current_velocity)
         
         lambda_reg = params.regularization
-        delta_v = lsqr_solve(A.toarray(), b, lambda_reg, max_iter=100)
+        
+        delta_v = lsqr_solve(A.toarray(), b_norm, lambda_reg, max_iter=50)
         
         delta_v = delta_v.reshape((nz, nx))
         
@@ -261,19 +329,28 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
         
         update_norm = np.linalg.norm(delta_v)
         
-        if update_norm > 1e-6:
-            max_step = 500.0
-            current_max = np.max(np.abs(delta_v))
-            if current_max > max_step:
-                step_scale = max_step / current_max
-                delta_v = delta_v * step_scale
-                update_norm = update_norm * step_scale
+        max_step = 20.0
+        if iteration < 10:
+            max_step = 5.0
+        elif iteration < 30:
+            max_step = 10.0
+        elif iteration < 60:
+            max_step = 15.0
+        
+        current_max = np.max(np.abs(delta_v))
+        if current_max > max_step and current_max > 1e-10:
+            step_scale = max_step / current_max
+            delta_v = delta_v * step_scale
+            update_norm = update_norm * step_scale
         
         model_update_history.append(update_norm)
         
         current_velocity = current_velocity + delta_v
-        current_velocity = np.maximum(current_velocity, 1000)
-        current_velocity = np.nan_to_num(current_velocity, nan=1500.0, posinf=6000.0, neginf=1000.0)
+        
+        v_lower = max(1000.0, v_min_true - 500.0)
+        v_upper = min(8000.0, v_max_true + 1000.0)
+        current_velocity = np.clip(current_velocity, v_lower, v_upper)
+        current_velocity = np.nan_to_num(current_velocity, nan=v_center, posinf=v_upper, neginf=v_lower)
     
     return InversionResult(
         initial_model=initial_velocity,
