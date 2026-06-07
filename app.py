@@ -808,7 +808,10 @@ elif page == "⏱️ 旅行时计算":
             st.markdown("---")
             st.subheader("结果展示")
             
-            source_idx = st.slider("选择震源", 0, len(sources) - 1, 0)
+            if len(sources) > 1:
+                source_idx = st.slider("选择震源", 0, len(sources) - 1, 0)
+            else:
+                source_idx = 0
             
             tab_contour, tab_rays = st.tabs(["旅行时等值线", "射线路径"])
             
