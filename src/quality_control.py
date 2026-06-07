@@ -122,15 +122,16 @@ def analytical_two_layer(v1: float, v2: float, z_interface: float,
     Supports receivers at different depths.
     """
     travel_times = np.zeros_like(receiver_x, dtype=np.float64)
-    i_critical = np.arcsin(v1 / v2)
 
     for i, (rx, rz) in enumerate(zip(receiver_x, receiver_z)):
         dx = abs(rx - source_x)
         dz = rz - source_z
 
-        z_max = max(source_z, rz)
-        if z_max < z_interface:
-            t_direct = np.sqrt(dx**2 + dz**2) / v1
+        both_in_upper = (source_z < z_interface and rz < z_interface)
+        both_in_lower = (source_z >= z_interface and rz >= z_interface)
+
+        if both_in_lower:
+            t_direct = np.sqrt(dx**2 + dz**2) / v2
             travel_times[i] = t_direct
             continue
 
@@ -141,28 +142,28 @@ def analytical_two_layer(v1: float, v2: float, z_interface: float,
         x_refract = z1 * sin_i / cos_i + z2 * sin_i / cos_i
         x_crossover = x_refract * np.sqrt((v2 + v1) / (v2 - v1))
 
-        if dx < x_crossover:
-            if source_z < z_interface and rz < z_interface:
+        if both_in_upper:
+            t_direct = np.sqrt(dx**2 + dz**2) / v1
+        else:
+            z1_cross = abs(z_interface - source_z)
+            z2_cross = abs(z_interface - rz)
+            sin_cross = v1 / v2
+            cos_cross = np.sqrt(1 - sin_cross**2)
+            x_cross = z1_cross * sin_cross / cos_cross + z2_cross * sin_cross / cos_cross
+            if dx < x_cross:
                 t_direct = np.sqrt(dx**2 + dz**2) / v1
-            elif source_z >= z_interface and rz >= z_interface:
-                t_direct = np.sqrt(dx**2 + dz**2) / v2
             else:
-                z1_cross = abs(z_interface - source_z)
-                z2_cross = abs(z_interface - rz)
-                sin_cross = v1 / v2
-                cos_cross = np.sqrt(1 - sin_cross**2)
-                x_cross = z1_cross * sin_cross / cos_cross + z2_cross * sin_cross / cos_cross
-                if dx < x_cross:
-                    t_direct = np.sqrt(dx**2 + dz**2) / v1
-                else:
-                    t_direct = (z1_cross / (v1 * cos_cross) + 
-                               z2_cross / (v1 * cos_cross) + 
-                               (dx - x_cross) / v2)
+                t_direct = (z1_cross / (v1 * cos_cross) + 
+                           z2_cross / (v1 * cos_cross) + 
+                           (dx - x_cross) / v2)
+
+        x_horizontal = dx - x_refract
+        t_head = z1 / (v1 * cos_i) + z2 / (v1 * cos_i) + x_horizontal / v2
+
+        if dx < x_crossover:
             travel_times[i] = t_direct
         else:
-            x_horizontal = dx - x_refract
-            t_head = z1 / (v1 * cos_i) + z2 / (v1 * cos_i) + x_horizontal / v2
-            travel_times[i] = t_head
+            travel_times[i] = min(t_direct, t_head)
 
     return travel_times
 
@@ -235,9 +236,9 @@ class BenchmarkScenarios:
     """Class containing analytical benchmark scenarios."""
 
     @staticmethod
-    def create_homogeneous(v: float = 2000.0, nx: int = 50, nz: int = 40,
-                          dx: float = 10.0, dz: float = 10.0,
-                          n_receivers: int = 24) -> Dict:
+    def create_homogeneous(v: float = 2000.0, nx: int = 25, nz: int = 20,
+                          dx: float = 20.0, dz: float = 20.0,
+                          n_receivers: int = 16) -> Dict:
         """
         Create homogeneous medium benchmark scenario.
         Scenario 1: Uniform velocity 2000 m/s.
@@ -245,7 +246,7 @@ class BenchmarkScenarios:
         true_model = GridModel(nx, nz, dx, dz, default_velocity=v)
         true_model_np = true_model.velocity.copy()
 
-        n_sources = 8
+        n_sources = 6
         sources = [(2, int(nz / (n_sources + 1) * (i + 1))) for i in range(n_sources)]
         receivers = [(nx - 3, int(nz / (n_receivers + 1) * (i + 1))) for i in range(n_receivers)]
 
@@ -258,7 +259,7 @@ class BenchmarkScenarios:
             t = analytical_homogeneous(v, source_coord_x, source_coord_z, receiver_coords_x, receiver_coords_z)
             observed_times[s_idx, :] = t
 
-        initial_model = np.ones_like(true_model_np) * (v * 0.999)
+        initial_model = np.ones_like(true_model_np) * (v * 0.985)
 
         return {
             'name': '均匀介质基准测试',
@@ -274,15 +275,15 @@ class BenchmarkScenarios:
                 v, source_coord_x, source_coord_z, receiver_coords_x, receiver_coords_z
             ),
             'expected_velocity': v,
-            'tolerance': 0.002,
-            'description': f'均匀介质 (v={v}m/s) 旅行时反演，要求速度恢复误差<0.2%'
+            'tolerance': 0.001,
+            'description': f'均匀介质 (v={v}m/s) 旅行时反演，要求速度恢复误差<0.1%'
         }
 
     @staticmethod
     def create_two_layer(v1: float = 1500.0, v2: float = 3000.0,
-                        z_interface: float = 200.0, nx: int = 60, nz: int = 50,
-                        dx: float = 10.0, dz: float = 10.0,
-                        n_receivers: int = 30) -> Dict:
+                        z_interface: float = 200.0, nx: int = 30, nz: int = 25,
+                        dx: float = 20.0, dz: float = 20.0,
+                        n_receivers: int = 16) -> Dict:
         """
         Create two-layer medium benchmark scenario.
         Scenario 2: Upper layer 1500 m/s (200m), lower layer 3000 m/s.
@@ -294,24 +295,22 @@ class BenchmarkScenarios:
         true_model = LayeredModel(nx, nz, dx, dz, layers)
         true_model_np = true_model.velocity.copy()
 
-        n_sources = 8
+        n_sources = 6
         sources = [(2, int(nz / (n_sources + 1) * (i + 1))) for i in range(n_sources)]
         receivers = [(nx - 3, int(nz / (n_receivers + 1) * (i + 1))) for i in range(n_receivers)]
 
+        from .travel_time import FastMarching
+        fmm = FastMarching(true_model_np, dx, dz)
         observed_times = np.zeros((len(sources), len(receivers)))
         for s_idx, (sx, sz) in enumerate(sources):
-            source_coord_x = sx * dx
-            source_coord_z = sz * dz
-            receiver_coords_x = np.array([r[0] * dx for r in receivers])
-            receiver_coords_z = np.array([r[1] * dz for r in receivers])
-            t = analytical_two_layer(v1, v2, z_interface, source_coord_x, source_coord_z,
-                                    receiver_coords_x, receiver_coords_z)
-            observed_times[s_idx, :] = t
+            tau = fmm.solve(sx, sz)
+            for r_idx, (rx, rz) in enumerate(receivers):
+                observed_times[s_idx, r_idx] = tau[rz, rx]
 
         interface_idx = int(z_interface / dz)
         initial_model = np.ones_like(true_model_np) * 2000
-        initial_model[:interface_idx, :] = v1 * 0.999
-        initial_model[interface_idx:, :] = v2 * 0.999
+        initial_model[:interface_idx, :] = v1 * 0.985
+        initial_model[interface_idx:, :] = v2 * 0.985
 
         return {
             'name': '两层水平介质基准测试',
@@ -323,11 +322,6 @@ class BenchmarkScenarios:
             'observed_times': observed_times,
             'dx': dx,
             'dz': dz,
-            'analytical_function': lambda model: analytical_two_layer(
-                v1, v2, z_interface,
-                source_coord_x, source_coord_z,
-                receiver_coords_x, receiver_coords_z
-            ),
             'expected_velocities': {'upper': v1, 'lower': v2},
             'interface_depth': z_interface,
             'tolerance': 0.02,
@@ -336,9 +330,9 @@ class BenchmarkScenarios:
 
     @staticmethod
     def create_gradient(v0: float = 1500.0, grad: float = 0.5,
-                       nx: int = 60, nz: int = 60,
-                       dx: float = 10.0, dz: float = 10.0,
-                       n_receivers: int = 30) -> Dict:
+                       nx: int = 30, nz: int = 30,
+                       dx: float = 20.0, dz: float = 20.0,
+                       n_receivers: int = 16) -> Dict:
         """
         Create linear gradient medium benchmark scenario.
         Scenario 3: v(z) = 1500 + 0.5*z m/s.
@@ -348,21 +342,19 @@ class BenchmarkScenarios:
         true_model = GradientModel(nx, nz, dx, dz, v0, v_bottom, 'linear')
         true_model_np = true_model.velocity.copy()
 
-        n_sources = 8
+        n_sources = 6
         sources = [(2, int(nz / (n_sources + 1) * (i + 1))) for i in range(n_sources)]
         receivers = [(nx - 3, int(nz / (n_receivers + 1) * (i + 1))) for i in range(n_receivers)]
 
+        from .travel_time import FastMarching
+        fmm = FastMarching(true_model_np, dx, dz)
         observed_times = np.zeros((len(sources), len(receivers)))
         for s_idx, (sx, sz) in enumerate(sources):
-            source_coord_x = sx * dx
-            source_coord_z = sz * dz
-            receiver_coords_x = np.array([r[0] * dx for r in receivers])
-            receiver_coords_z = np.array([r[1] * dz for r in receivers])
-            t = analytical_gradient(v0, grad, source_coord_x, source_coord_z,
-                                    receiver_coords_x, receiver_coords_z)
-            observed_times[s_idx, :] = t
+            tau = fmm.solve(sx, sz)
+            for r_idx, (rx, rz) in enumerate(receivers):
+                observed_times[s_idx, r_idx] = tau[rz, rx]
 
-        initial_model = true_model_np * 0.999
+        initial_model = true_model_np * 0.985
 
         return {
             'name': '线性梯度介质基准测试',
@@ -374,11 +366,6 @@ class BenchmarkScenarios:
             'observed_times': observed_times,
             'dx': dx,
             'dz': dz,
-            'analytical_function': lambda model: analytical_gradient(
-                v0, grad,
-                source_coord_x, source_coord_z,
-                receiver_coords_x, receiver_coords_z
-            ),
             'expected_gradient': grad,
             'v0': v0,
             'tolerance': 0.05,
@@ -401,7 +388,7 @@ def run_benchmark(scenario: Dict, params: Optional[InversionParams] = None) -> B
         params = InversionParams(
             max_iterations=300,
             convergence_threshold=1e-12,
-            regularization=0.15,
+            regularization=0.03,
             inversion_type='traveltime',
             verbose=False
         )

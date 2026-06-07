@@ -13,9 +13,9 @@ print("地震反演基准测试验证")
 print("=" * 60)
 
 default_params = InversionParams(
-    max_iterations=300,
-    convergence_threshold=1e-12,
-    regularization=0.15,
+    max_iterations=350,
+    convergence_threshold=1e-13,
+    regularization=0.02,
     inversion_type='traveltime',
     verbose=False
 )

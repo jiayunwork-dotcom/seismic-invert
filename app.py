@@ -2826,9 +2826,9 @@ elif page == "✅ 反演质量控制":
                 "线性梯度介质基准测试": BenchmarkScenarios.create_gradient
             }
 
-            max_iter = st.number_input("最大迭代次数", 10, 1000, 300, 10)
-            reg_param = st.number_input("正则化系数", 0.0001, 10.0, 0.15, format="%.4f")
-            conv_thresh = st.number_input("收敛阈值", 1e-15, 1e-2, 1e-12, format="%.1e")
+            max_iter = st.number_input("最大迭代次数", 10, 1000, 400, 10)
+            reg_param = st.number_input("正则化系数", 0.0001, 10.0, 0.02, format="%.4f")
+            conv_thresh = st.number_input("收敛阈值", 1e-15, 1e-2, 1e-15, format="%.1e")
 
         with col_scenario2:
             st.markdown("#### 场景说明")
@@ -3214,7 +3214,7 @@ elif page == "✅ 反演质量控制":
             }
 
             base_max_iter = st.number_input("基准迭代次数", 10, 500, 300, 10, key="sens_iter")
-            base_reg = st.number_input("基准正则化系数", 0.0001, 10.0, 0.15, format="%.4f", key="sens_reg")
+            base_reg = st.number_input("基准正则化系数", 0.0001, 10.0, 0.04, format="%.4f", key="sens_reg")
             base_conv = st.number_input("基准收敛阈值", 1e-15, 1e-2, 1e-12, format="%.1e", key="sens_conv")
 
         with sens_col2:

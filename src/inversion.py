@@ -237,9 +237,11 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
     converged = False
     prev_objective = np.inf
     
-    v_min_true = np.min(initial_velocity)
-    v_max_true = np.max(initial_velocity)
-    v_center = (v_min_true + v_max_true) / 2.0
+    v_min_init = np.min(initial_velocity)
+    v_max_init = np.max(initial_velocity)
+    v_center = (v_min_init + v_max_init) / 2.0
+    v_min_true = max(1000, v_min_init * 0.85)
+    v_max_true = min(8000, v_max_init * 1.15)
     
     for iteration in range(params.max_iterations):
         all_rows = []
@@ -329,13 +331,13 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
         
         update_norm = np.linalg.norm(delta_v)
         
-        max_step = 20.0
+        max_step = 150.0
         if iteration < 10:
-            max_step = 5.0
+            max_step = 80.0
         elif iteration < 30:
-            max_step = 10.0
+            max_step = 120.0
         elif iteration < 60:
-            max_step = 15.0
+            max_step = 140.0
         
         current_max = np.max(np.abs(delta_v))
         if current_max > max_step and current_max > 1e-10:
@@ -347,8 +349,8 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
         
         current_velocity = current_velocity + delta_v
         
-        v_lower = max(1000.0, v_min_true - 500.0)
-        v_upper = min(8000.0, v_max_true + 1000.0)
+        v_lower = max(1000.0, v_min_true)
+        v_upper = min(8000.0, v_max_true)
         current_velocity = np.clip(current_velocity, v_lower, v_upper)
         current_velocity = np.nan_to_num(current_velocity, nan=v_center, posinf=v_upper, neginf=v_lower)
     

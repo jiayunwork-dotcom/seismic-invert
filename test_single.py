@@ -11,9 +11,9 @@ print("单场景快速测试")
 print("=" * 60)
 
 default_params = InversionParams(
-    max_iterations=100,
-    convergence_threshold=1e-10,
-    regularization=0.0001,
+    max_iterations=350,
+    convergence_threshold=1e-13,
+    regularization=0.02,
     inversion_type='traveltime',
     verbose=True
 )
