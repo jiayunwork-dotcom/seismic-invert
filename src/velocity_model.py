@@ -218,8 +218,8 @@ def create_default_model(model_type: str = 'layered', **kwargs) -> VelocityModel
     """Create a default velocity model for demonstration purposes."""
     nx = kwargs.get('nx', 100)
     nz = kwargs.get('nz', 80)
-    dx = kwargs.get('dx', 10.0)
-    dz = kwargs.get('dz', 10.0)
+    dx = kwargs.get('dx', 5.0)
+    dz = kwargs.get('dz', 5.0)
     
     if model_type == 'layered':
         layers = kwargs.get('layers', [

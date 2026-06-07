@@ -6,8 +6,16 @@ from io import BytesIO
 import tempfile
 import os
 import sys
+from PIL import Image
+import matplotlib.colors as mcolors
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    from streamlit_drawable_canvas import st_canvas
+    CANVAS_AVAILABLE = True
+except ImportError:
+    CANVAS_AVAILABLE = False
 
 from src.data_io import parse_segy, parse_csv, compute_statistics, reorder_gathers
 from src.velocity_model import (
@@ -293,8 +301,8 @@ elif page == "📐 速度模型定义":
     with model_params:
         nx = st.number_input("水平网格数 (nx)", 10, 500, 100, 10)
         nz = st.number_input("垂直网格数 (nz)", 10, 500, 80, 10)
-        dx = st.number_input("水平网格间距 (m)", 5.0, 100.0, 10.0, 5.0)
-        dz = st.number_input("垂直网格间距 (m)", 5.0, 100.0, 10.0, 5.0)
+        dx = st.number_input("水平网格间距 (m)", 5.0, 100.0, 5.0, 5.0)
+        dz = st.number_input("垂直网格间距 (m)", 5.0, 100.0, 5.0, 5.0)
         colormap = st.selectbox("色标", ["viridis", "jet", "seismic"], 0)
         add_contours = st.checkbox("叠加等值线", False)
     
@@ -384,54 +392,210 @@ elif page == "📐 速度模型定义":
             if not isinstance(model, GridModel):
                 st.warning("当前模型不是网格模型，请先转换")
             else:
-                st.subheader("编辑工具")
+                st.subheader("🎨 画布式交互编辑")
                 
-                edit_mode = st.radio("编辑模式", ["画笔", "区域填充", "渐变填充"], horizontal=True)
+                if not CANVAS_AVAILABLE:
+                    st.warning("⚠️ 未安装 streamlit-drawable-canvas，部分交互功能不可用。请运行: pip install streamlit-drawable-canvas")
                 
-                if edit_mode == "画笔":
-                    col_brush1, col_brush2, col_brush3 = st.columns(3)
-                    with col_brush1:
-                        paint_v = st.number_input("绘制速度 (m/s)", 1000.0, 8000.0, 3000.0, 100.0)
-                    with col_brush2:
-                        brush_radius = st.slider("画笔半径 (网格)", 1, 10, 2)
-                    with col_brush3:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button("平滑模型"):
+                v_min_display = float(np.min(model.velocity))
+                v_max_display = float(np.max(model.velocity))
+                
+                col_edit1, col_edit2 = st.columns([1, 2])
+                
+                with col_edit1:
+                    st.markdown("##### 编辑工具")
+                    canvas_mode = st.radio(
+                        "绘制模式",
+                        ["画笔", "区域填充", "渐变填充", "橡皮擦"],
+                        horizontal=False
+                    )
+                    
+                    paint_v = st.number_input(
+                        "绘制速度 (m/s)", 
+                        v_min_display - 500, v_max_display + 1000, 
+                        (v_min_display + v_max_display) / 2, 
+                        100.0
+                    )
+                    
+                    if canvas_mode == "画笔" or canvas_mode == "橡皮擦":
+                        stroke_width = st.slider("画笔大小 (像素)", 2, 50, 8)
+                    elif canvas_mode == "区域填充":
+                        st.info("💡 在画布上拖动鼠标选择矩形区域进行填充")
+                    elif canvas_mode == "渐变填充":
+                        fill_direction = st.radio("渐变方向", ["垂直", "水平"])
+                        v_start = st.number_input("起始速度 (m/s)", v_min_display - 500, v_max_display + 1000, v_min_display, 100.0)
+                        v_end = st.number_input("结束速度 (m/s)", v_min_display - 500, v_max_display + 1000, v_max_display, 100.0)
+                    
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("🔄 重置模型", use_container_width=True):
+                            model.velocity[:] = 2000
+                            st.success("模型已重置")
+                    with col_btn2:
+                        if st.button("✨ 平滑模型", use_container_width=True):
                             model.smooth(radius=2)
-                            st.success("模型已平滑！")
+                            st.success("模型已平滑")
                     
-                    x_paint = st.slider("X位置", 0, nx - 1, nx // 2)
-                    z_paint = st.slider("Z位置", 0, nz - 1, nz // 2)
+                    st.markdown("##### 速度-颜色对应")
+                    cmap_edit = plt.get_cmap(colormap)
+                    norm_edit = mcolors.Normalize(vmin=v_min_display, vmax=v_max_display)
+                    fig_cbar, ax_cbar = plt.subplots(figsize=(3, 0.5))
+                    cb = plt.colorbar(plt.cm.ScalarMappable(norm=norm_edit, cmap=cmap_edit),
+                                    cax=ax_cbar, orientation='horizontal')
+                    cb.set_label('速度 (m/s)', fontsize=8)
+                    buf_cbar = figure_to_bytes(fig_cbar)
+                    st.image(buf_cbar, use_column_width=True)
+                    plt.close(fig_cbar)
                     
-                    if st.button("绘制", type="primary"):
-                        model.paint_velocity(x_paint, z_paint, paint_v, brush_radius)
-                        st.success("已绘制！")
+                    st.info(f"当前画笔速度: **{paint_v:.0f} m/s**")
                 
-                elif edit_mode == "区域填充":
-                    col_fill1, col_fill2 = st.columns(2)
-                    with col_fill1:
-                        x1 = st.slider("X起始", 0, nx - 1, 20)
-                        x2 = st.slider("X结束", 0, nx - 1, 80)
-                        fill_v = st.number_input("填充速度 (m/s)", 1000.0, 8000.0, 3500.0, 100.0)
-                    with col_fill2:
-                        z1 = st.slider("Z起始", 0, nz - 1, 30)
-                        z2 = st.slider("Z结束", 0, nz - 1, 60)
-                    
-                    if st.button("填充区域", type="primary"):
-                        model.fill_region(x1, x2, z1, z2, fill_v)
-                        st.success("区域已填充！")
-                
-                else:
-                    col_grad1, col_grad2 = st.columns(2)
-                    with col_grad1:
-                        v_top_fill = st.number_input("顶部填充速度 (m/s)", 1000.0, 8000.0, 1500.0, 100.0)
-                        v_bottom_fill = st.number_input("底部填充速度 (m/s)", 1000.0, 8000.0, 4000.0, 100.0)
-                    with col_grad2:
-                        grad_type = st.selectbox("填充梯度类型", ["linear", "exponential"])
-                    
-                    if st.button("渐变填充整个模型", type="primary"):
-                        model.fill_between_velocities(v_top_fill, v_bottom_fill, grad_type)
-                        st.success("渐变填充完成！")
+                with col_edit2:
+                    if CANVAS_AVAILABLE:
+                        velocity_image = (model.velocity - v_min_display) / (v_max_display - v_min_display + 1e-10)
+                        velocity_image = np.clip(velocity_image, 0, 1)
+                        velocity_image = (cmap_edit(velocity_image)[:, :, :3] * 255).astype(np.uint8)
+                        bg_image = Image.fromarray(velocity_image)
+                        
+                        scale_factor = max(1, min(800 / nx, 500 / nz))
+                        canvas_width = int(nx * scale_factor)
+                        canvas_height = int(nz * scale_factor)
+                        
+                        drawing_mode_map = {
+                            "画笔": "freedraw",
+                            "橡皮擦": "freedraw",
+                            "区域填充": "rect",
+                            "渐变填充": "line"
+                        }
+                        
+                        stroke_color = mcolors.to_hex(cmap_edit(norm_edit(paint_v)))
+                        if canvas_mode == "橡皮擦":
+                            stroke_color = "#ffffff"
+                            fill_color = "#ffffff"
+                        else:
+                            fill_color = stroke_color
+                        
+                        canvas_result = st_canvas(
+                            fill_color=fill_color,
+                            stroke_color=stroke_color,
+                            stroke_width=stroke_width if canvas_mode in ["画笔", "橡皮擦"] else 2,
+                            background_image=bg_image,
+                            update_streamlit=True,
+                            height=canvas_height,
+                            width=canvas_width,
+                            drawing_mode=drawing_mode_map[canvas_mode],
+                            key="canvas_velocity",
+                        )
+                        
+                        if canvas_result.json_data is not None:
+                            objects = canvas_result.json_data.get("objects", [])
+                            
+                            if objects and canvas_mode != "画笔" and canvas_mode != "橡皮擦":
+                                last_obj = objects[-1]
+                                obj_type = last_obj.get("type")
+                                
+                                scale_x = nx / canvas_width
+                                scale_z = nz / canvas_height
+                                
+                                if canvas_mode == "区域填充" and obj_type == "rect":
+                                    x1 = int(last_obj["left"] * scale_x)
+                                    y1 = int(last_obj["top"] * scale_z)
+                                    w = int(last_obj["width"] * scale_x)
+                                    h = int(last_obj["height"] * scale_z)
+                                    x2 = min(nx - 1, x1 + w)
+                                    z2 = min(nz - 1, y1 + h)
+                                    x1, x2 = sorted([max(0, x1), max(0, x2)])
+                                    z1, z2 = sorted([max(0, y1), max(0, z2)])
+                                    
+                                    model.fill_region(x1, x2, z1, z2, paint_v)
+                                    st.success(f"已填充区域: X[{x1}-{x2}], Z[{z1}-{z2}]")
+                                    canvas_result.json_data["objects"] = []
+                                    st.rerun()
+                                
+                                elif canvas_mode == "渐变填充" and obj_type == "line":
+                                    x1 = int(last_obj["x1"] * scale_x)
+                                    z1 = int(last_obj["y1"] * scale_z)
+                                    x2 = int(last_obj["x2"] * scale_x)
+                                    z2 = int(last_obj["y2"] * scale_z)
+                                    
+                                    if fill_direction == "垂直":
+                                        z_start, z_end = sorted([z1, z2])
+                                        for z in range(z_start, min(z_end + 1, nz)):
+                                            alpha = (z - z_start) / max(1, z_end - z_start)
+                                            v = v_start + (v_end - v_start) * alpha
+                                            model.velocity[z, :] = v
+                                    else:
+                                        x_start, x_end = sorted([x1, x2])
+                                        for x in range(x_start, min(x_end + 1, nx)):
+                                            alpha = (x - x_start) / max(1, x_end - x_start)
+                                            v = v_start + (v_end - v_start) * alpha
+                                            model.velocity[:, x] = v
+                                    
+                                    st.success("渐变填充完成！")
+                                    canvas_result.json_data["objects"] = []
+                                    st.rerun()
+                            
+                            elif (canvas_mode == "画笔" or canvas_mode == "橡皮擦") and objects:
+                                paths = [obj for obj in objects if obj.get("type") == "path"]
+                                if paths:
+                                    for path in paths:
+                                        path_data = path.get("path", [])
+                                        for point in path_data:
+                                            if len(point) >= 2 and point[0] in ('Q', 'L', 'M'):
+                                                px = int(point[1] * scale_x)
+                                                pz = int(point[2] * scale_z)
+                                                if 0 <= px < nx and 0 <= pz < nz:
+                                                    radius = max(1, int(stroke_width * scale_x / 2))
+                                                    if canvas_mode == "橡皮擦":
+                                                        erase_v = v_min_display
+                                                        model.paint_velocity(px, pz, erase_v, radius)
+                                                    else:
+                                                        model.paint_velocity(px, pz, paint_v, radius)
+                                    
+                                    if paths:
+                                        canvas_result.json_data["objects"] = []
+                                        st.rerun()
+                    else:
+                        st.info("📋 传统编辑模式（安装streamlit-drawable-canvas后可使用画布绘制）")
+                        edit_mode = st.radio("编辑模式", ["画笔", "区域填充", "渐变填充"], horizontal=True, key="legacy_edit")
+                        
+                        if edit_mode == "画笔":
+                            col_brush1, col_brush2 = st.columns(2)
+                            with col_brush1:
+                                paint_v_legacy = st.number_input("绘制速度 (m/s)", 1000.0, 8000.0, 3000.0, 100.0, key="legacy_v")
+                                brush_radius = st.slider("画笔半径 (网格)", 1, 10, 2, key="legacy_r")
+                            with col_brush2:
+                                x_paint = st.slider("X位置", 0, nx - 1, nx // 2, key="legacy_x")
+                                z_paint = st.slider("Z位置", 0, nz - 1, nz // 2, key="legacy_z")
+                            
+                            if st.button("绘制", type="primary", key="legacy_paint"):
+                                model.paint_velocity(x_paint, z_paint, paint_v_legacy, brush_radius)
+                                st.success("已绘制！")
+                        
+                        elif edit_mode == "区域填充":
+                            col_fill1, col_fill2 = st.columns(2)
+                            with col_fill1:
+                                x1 = st.slider("X起始", 0, nx - 1, 20, key="legacy_x1")
+                                x2 = st.slider("X结束", 0, nx - 1, 80, key="legacy_x2")
+                                fill_v_legacy = st.number_input("填充速度 (m/s)", 1000.0, 8000.0, 3500.0, 100.0, key="legacy_fv")
+                            with col_fill2:
+                                z1 = st.slider("Z起始", 0, nz - 1, 30, key="legacy_z1")
+                                z2 = st.slider("Z结束", 0, nz - 1, 60, key="legacy_z2")
+                            
+                            if st.button("填充区域", type="primary", key="legacy_fill"):
+                                model.fill_region(x1, x2, z1, z2, fill_v_legacy)
+                                st.success("区域已填充！")
+                        
+                        else:
+                            col_grad1, col_grad2 = st.columns(2)
+                            with col_grad1:
+                                v_top_fill = st.number_input("顶部填充速度 (m/s)", 1000.0, 8000.0, 1500.0, 100.0, key="legacy_vt")
+                                v_bottom_fill = st.number_input("底部填充速度 (m/s)", 1000.0, 8000.0, 4000.0, 100.0, key="legacy_vb")
+                            with col_grad2:
+                                grad_type = st.selectbox("填充梯度类型", ["linear", "exponential"], key="legacy_gt")
+                            
+                            if st.button("渐变填充整个模型", type="primary", key="legacy_grad"):
+                                model.fill_between_velocities(v_top_fill, v_bottom_fill, grad_type)
+                                st.success("渐变填充完成！")
     
     st.markdown("---")
     st.subheader("模型操作")
@@ -541,14 +705,25 @@ elif page == "🔊 正演模拟":
         with col_params1:
             st.subheader("数值参数")
             
-            dt = st.number_input("时间步长 (s)", 0.0001, 0.01, 0.001, 0.0001, format="%.4f")
+            v_min = np.min(model.velocity)
+            v_max = np.max(model.velocity)
+            f_max_default = min(30.0, v_min / (10 * min(model.dx, model.dz)))
+            dt_max_stable = min(model.dx, model.dz) / (v_max * np.sqrt(2))
+            dt_default = min(0.0008, dt_max_stable * 0.8)
+            
+            if 'rec_dt' in st.session_state:
+                dt_default = st.session_state.pop('rec_dt')
+            if 'rec_freq' in st.session_state:
+                f_max_default = st.session_state.pop('rec_freq')
+            
+            dt = st.number_input("时间步长 (s)", 0.0001, 0.01, dt_default, 0.0001, format="%.4f")
             nt = st.number_input("时间步数", 100, 5000, 1000, 100)
             
             col_source1, col_source2 = st.columns(2)
             with col_source1:
                 source_type = st.selectbox("震源子波", ["ricker", "gauss"],
                                           format_func=lambda x: "Ricker小波" if x == "ricker" else "Gauss一阶导数")
-                source_freq = st.number_input("震源主频 (Hz)", 5.0, 100.0, 30.0, 5.0)
+                source_freq = st.number_input("震源主频 (Hz)", 5.0, 100.0, f_max_default, 5.0)
             with col_source2:
                 source_x = st.number_input("震源X位置 (网格)", 0, model.nx - 1, model.nx // 2)
                 source_z = st.number_input("震源Z位置 (网格)", 0, model.nz - 1, 2)
@@ -590,6 +765,21 @@ elif page == "🔊 正演模拟":
                     st.warning(f"建议最大网格间距: {stability['max_dx_stable']:.1f} m")
             with col_stab3:
                 st.metric("每波长网格点数", f"{1/stability['points_per_wavelength']:.1f}")
+            
+            if not (stability['cfl_ok'] and stability['dispersion_ok']):
+                st.markdown("---")
+                st.info("💡 参数不满足稳定性条件，建议调整以下参数：")
+                col_rec1, col_rec2 = st.columns(2)
+                with col_rec1:
+                    rec_dt = min(stability.get('max_dt_stable', 0.001) * 0.9, dt)
+                    rec_freq = min(source_freq, np.min(model.velocity) / (10 * min(model.dx, model.dz)) / 2)
+                    st.write(f"**推荐时间步长:** {rec_dt*1000:.2f} ms")
+                    st.write(f"**推荐震源主频:** {rec_freq:.1f} Hz")
+                with col_rec2:
+                    if st.button("🔧 一键应用推荐参数", type="primary"):
+                        st.session_state.rec_dt = rec_dt
+                        st.session_state.rec_freq = rec_freq
+                        st.rerun()
         
         if st.button("开始正演模拟", type="primary", disabled=not (stability['cfl_ok'] and stability['dispersion_ok'])):
             if not (stability['cfl_ok'] and stability['dispersion_ok']):
@@ -668,12 +858,35 @@ elif page == "🔊 正演模拟":
                 st.image(buf_wavelet, use_column_width=True)
             
             with tab_compare:
+                st.subheader("📊 数据对比与残差分析")
+                
+                syn_traces = result['seismograms']
+                
                 if st.session_state.seismic_data is not None:
-                    st.subheader("与观测数据对比")
-                    
                     obs_data = st.session_state.seismic_data
                     obs_traces = obs_data['traces'].T
-                    syn_traces = result['seismograms']
+                    data_source = "导入的观测数据"
+                else:
+                    st.info("💡 尚未导入观测数据。可以使用合成数据添加噪声作为模拟观测数据进行对比演示。")
+                    col_noise1, col_noise2 = st.columns(2)
+                    with col_noise1:
+                        noise_level = st.slider("噪声水平 (%)", 0, 50, 10, 5)
+                    with col_noise2:
+                        if st.button("🎲 生成带噪观测数据", type="primary"):
+                            max_amp = np.max(np.abs(syn_traces))
+                            noise = np.random.normal(0, max_amp * noise_level / 100, syn_traces.shape)
+                            st.session_state.simulated_obs = syn_traces + noise
+                            st.success(f"已生成噪声水平为 {noise_level}% 的模拟观测数据")
+                    
+                    if 'simulated_obs' in st.session_state:
+                        obs_traces = st.session_state.simulated_obs
+                        data_source = f"模拟观测数据 (噪声 {noise_level}%)"
+                    else:
+                        obs_traces = None
+                        data_source = None
+                
+                if obs_traces is not None:
+                    st.markdown(f"**数据源:** {data_source}")
                     
                     min_traces = min(obs_traces.shape[1], syn_traces.shape[1])
                     min_samples = min(obs_traces.shape[0], syn_traces.shape[0])
@@ -683,29 +896,196 @@ elif page == "🔊 正演模拟":
                     time_compare = result['time'][:min_samples]
                     
                     with st.spinner("计算残差..."):
-                        residual = compute_residual(obs_for_compare, syn_for_compare)
+                        residual_data = compute_residual(obs_for_compare, syn_for_compare)
                     
-                    col_res1, col_res2, col_res3 = st.columns(3)
+                    col_res1, col_res2, col_res3, col_res4 = st.columns(4)
                     with col_res1:
-                        st.metric("Misfit", f"{residual['misfit']:.4e}")
+                        st.metric("Misfit", f"{residual_data['misfit']:.4e}")
                     with col_res2:
-                        st.metric("RMS误差", f"{residual['rms_error']:.4f}")
+                        st.metric("RMS误差", f"{residual_data['rms_error']:.4f}")
                     with col_res3:
-                        st.metric("平均相关系数", f"{np.mean(residual['correlation']):.4f}")
+                        st.metric("平均相关系数", f"{np.mean(residual_data['correlation']):.4f}")
+                    with col_res4:
+                        st.metric("最大残差振幅", f"{np.max(np.abs(residual_data['residual'])):.4f}")
                     
-                    trace_idx = st.slider("选择道号", 0, min_traces - 1, min_traces // 2)
+                    st.markdown("---")
                     
-                    with st.spinner("正在绘制对比图..."):
-                        fig_compare = plot_comparison(
-                            obs_for_compare, syn_for_compare,
-                            time_compare,
-                            trace_indices=[trace_idx],
-                            title="观测数据 vs 合成数据"
-                        )
-                        buf_compare = figure_to_bytes(fig_compare)
-                        st.image(buf_compare, use_column_width=True)
+                    compare_mode = st.radio(
+                        "对比显示模式",
+                        ["单道波形对比", "三道集剖面对比 (观测/合成/残差)", "残差剖面"],
+                        horizontal=True
+                    )
+                    
+                    if compare_mode == "单道波形对比":
+                        trace_idx = st.slider("选择道号", 0, min_traces - 1, min_traces // 2)
+                        
+                        with st.spinner("正在绘制对比图..."):
+                            fig_compare = plot_comparison(
+                                obs_for_compare, syn_for_compare,
+                                time_compare,
+                                trace_indices=[trace_idx],
+                                title=f"观测数据 vs 合成数据 - 第{trace_idx + 1}道"
+                            )
+                            buf_compare = figure_to_bytes(fig_compare)
+                            st.image(buf_compare, use_column_width=True)
+                            
+                            col_dl1, col_dl2 = st.columns(2)
+                            with col_dl1:
+                                st.download_button(
+                                    "下载对比图PNG",
+                                    buf_compare,
+                                    file_name=f"compare_trace_{trace_idx+1}.png",
+                                    mime="image/png"
+                                )
+                            with col_dl2:
+                                pdf_buf = figure_to_bytes(fig_compare, format='pdf')
+                                st.download_button(
+                                    "下载对比图PDF",
+                                    pdf_buf,
+                                    file_name=f"compare_trace_{trace_idx+1}.pdf",
+                                    mime="application/pdf"
+                                )
+                    
+                    elif compare_mode == "三道集剖面对比 (观测/合成/残差)":
+                        display_type = st.radio("显示类型", ["变面积图", "Wiggle图"], horizontal=True)
+                        
+                        with st.spinner("正在绘制三道集对比..."):
+                            fig_gather, axes = plt.subplots(1, 3, figsize=(18, 6))
+                            
+                            if display_type == "变面积图":
+                                vmax = max(np.max(np.abs(obs_for_compare)), np.max(np.abs(syn_for_compare)))
+                                
+                                im0 = axes[0].imshow(obs_for_compare, aspect='auto', cmap='seismic',
+                                                   extent=[0, min_traces, time_compare[-1], time_compare[0]],
+                                                   vmin=-vmax, vmax=vmax)
+                                axes[0].set_title('观测数据', fontsize=12, fontweight='bold')
+                                
+                                im1 = axes[1].imshow(syn_for_compare, aspect='auto', cmap='seismic',
+                                                   extent=[0, min_traces, time_compare[-1], time_compare[0]],
+                                                   vmin=-vmax, vmax=vmax)
+                                axes[1].set_title('合成数据', fontsize=12, fontweight='bold')
+                                
+                                im2 = axes[2].imshow(residual_data['residual'], aspect='auto', cmap='seismic',
+                                                   extent=[0, min_traces, time_compare[-1], time_compare[0]])
+                                axes[2].set_title('残差 (观测-合成)', fontsize=12, fontweight='bold')
+                                
+                                for ax in axes:
+                                    ax.set_xlabel('道号')
+                                    ax.set_ylabel('时间 (s)')
+                                
+                                cbar0 = plt.colorbar(im0, ax=axes[0], shrink=0.8)
+                                cbar1 = plt.colorbar(im1, ax=axes[1], shrink=0.8)
+                                cbar2 = plt.colorbar(im2, ax=axes[2], shrink=0.8)
+                                
+                            else:
+                                for i in range(min_traces):
+                                    offset = i * 0.8
+                                    axes[0].plot(offset + obs_for_compare[:, i] / np.max(np.abs(obs_for_compare)) * 0.35,
+                                               time_compare, 'k-', linewidth=0.5)
+                                    axes[0].fill_betweenx(time_compare, offset,
+                                                        offset + obs_for_compare[:, i] / np.max(np.abs(obs_for_compare)) * 0.35,
+                                                        where=obs_for_compare[:, i] > 0, color='black')
+                                
+                                for i in range(min_traces):
+                                    offset = i * 0.8
+                                    axes[1].plot(offset + syn_for_compare[:, i] / np.max(np.abs(syn_for_compare)) * 0.35,
+                                               time_compare, 'k-', linewidth=0.5)
+                                    axes[1].fill_betweenx(time_compare, offset,
+                                                        offset + syn_for_compare[:, i] / np.max(np.abs(syn_for_compare)) * 0.35,
+                                                        where=syn_for_compare[:, i] > 0, color='black')
+                                
+                                res_max = np.max(np.abs(residual_data['residual']))
+                                for i in range(min_traces):
+                                    offset = i * 0.8
+                                    axes[2].plot(offset + residual_data['residual'][:, i] / res_max * 0.35,
+                                               time_compare, 'k-', linewidth=0.5)
+                                    axes[2].fill_betweenx(time_compare, offset,
+                                                        offset + residual_data['residual'][:, i] / res_max * 0.35,
+                                                        where=residual_data['residual'][:, i] > 0, color='black')
+                                
+                                axes[0].set_title('观测数据', fontsize=12, fontweight='bold')
+                                axes[1].set_title('合成数据', fontsize=12, fontweight='bold')
+                                axes[2].set_title('残差 (观测-合成)', fontsize=12, fontweight='bold')
+                                
+                                for ax in axes:
+                                    ax.set_xlabel('道号')
+                                    ax.set_ylabel('时间 (s)')
+                                    ax.set_xlim(-0.5, min_traces * 0.8)
+                                    ax.set_xticks(np.arange(0, min_traces * 0.8, 5 * 0.8))
+                                    ax.set_xticklabels(np.arange(0, min_traces, 5))
+                                    ax.invert_yaxis()
+                            
+                            plt.tight_layout()
+                            buf_gather = figure_to_bytes(fig_gather)
+                            st.image(buf_gather, use_column_width=True)
+                            
+                            col_dl1, col_dl2 = st.columns(2)
+                            with col_dl1:
+                                st.download_button(
+                                    "下载三道集对比PNG",
+                                    buf_gather,
+                                    file_name="gather_comparison.png",
+                                    mime="image/png"
+                                )
+                            with col_dl2:
+                                pdf_buf = figure_to_bytes(fig_gather, format='pdf')
+                                st.download_button(
+                                    "下载三道集对比PDF",
+                                    pdf_buf,
+                                    file_name="gather_comparison.pdf",
+                                    mime="application/pdf"
+                                )
+                    
+                    else:
+                        with st.spinner("正在绘制残差剖面..."):
+                            fig_res, ax = plt.subplots(figsize=(12, 6))
+                            vmax = np.max(np.abs(residual_data['residual']))
+                            im = ax.imshow(residual_data['residual'], aspect='auto', cmap='seismic',
+                                         extent=[0, min_traces, time_compare[-1], time_compare[0]],
+                                         vmin=-vmax, vmax=vmax)
+                            ax.set_xlabel('道号')
+                            ax.set_ylabel('时间 (s)')
+                            ax.set_title('残差剖面 (观测数据 - 合成数据)', fontsize=14, fontweight='bold')
+                            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+                            cbar.set_label('残差振幅')
+                            plt.tight_layout()
+                            buf_res = figure_to_bytes(fig_res)
+                            st.image(buf_res, use_column_width=True)
+                            
+                            col_dl1, col_dl2 = st.columns(2)
+                            with col_dl1:
+                                st.download_button(
+                                    "下载残差剖面PNG",
+                                    buf_res,
+                                    file_name="residual_section.png",
+                                    mime="image/png"
+                                )
+                            with col_dl2:
+                                pdf_buf = figure_to_bytes(fig_res, format='pdf')
+                                st.download_button(
+                                    "下载残差剖面PDF",
+                                    pdf_buf,
+                                    file_name="residual_section.pdf",
+                                    mime="application/pdf"
+                                )
+                    
+                    st.markdown("---")
+                    st.subheader("📈 收敛曲线（各道相关系数）")
+                    fig_corr, ax = plt.subplots(figsize=(12, 4))
+                    ax.plot(residual_data['correlation'], 'b-o', markersize=4, linewidth=1)
+                    ax.axhline(y=np.mean(residual_data['correlation']), color='r', linestyle='--', 
+                              label=f'平均: {np.mean(residual_data["correlation"]):.3f}')
+                    ax.set_xlabel('道号')
+                    ax.set_ylabel('相关系数')
+                    ax.set_title('各道观测与合成数据相关系数')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    buf_corr = figure_to_bytes(fig_corr)
+                    st.image(buf_corr, use_column_width=True)
+                
                 else:
-                    st.info("请先导入观测数据进行对比")
+                    st.info("👆 请先导入观测数据，或点击上方按钮生成模拟观测数据进行对比")
 
 elif page == "⏱️ 旅行时计算":
     st.header("⏱️ 旅行时计算")
@@ -1410,37 +1790,201 @@ elif page == "📡 叠加处理":
                 st.image(buf_offset, use_column_width=True)
             
             with tab2:
-                st.subheader("速度谱")
+                st.subheader("🎯 速度谱 - 交互拾取叠加速度")
                 
                 spectrum_result = result['velocity_spectrum']
+                spectrum = spectrum_result['spectrum']
+                velocities = spectrum_result['velocities']
+                times_spec = spectrum_result['times']
                 
-                with st.spinner("绘制速度谱..."):
-                    fig = plot_velocity_spectrum(
-                        spectrum_result['spectrum'],
-                        spectrum_result['velocities'],
-                        spectrum_result['times'],
-                        picks=result['velocity_picks'],
-                        title=f"CDP {cdp_number} 速度谱"
+                st.info("💡 操作方式：调整下方滑块在速度谱上点选能量极大值位置，点击\"添加拾取点\"按钮将其加入速度函数")
+                
+                col_pick1, col_pick2 = st.columns([2, 1])
+                
+                with col_pick1:
+                    st.markdown("##### 🔍 速度谱拾取")
+                    
+                    pick_time = st.slider(
+                        "拾取时间 (s)",
+                        float(times_spec[0]),
+                        float(times_spec[-1]),
+                        float(times_spec[len(times_spec) // 2]),
+                        step=float(dt),
+                        format="%.3f",
+                        key="pick_time_slider"
                     )
-                    buf = figure_to_bytes(fig)
-                    st.image(buf, use_column_width=True)
+                    
+                    time_idx = int(np.argmin(np.abs(times_spec - pick_time)))
+                    
+                    col_v1, col_v2 = st.columns(2)
+                    with col_v1:
+                        auto_pick = st.checkbox("自动拾取该时刻最大相干值", value=True, key="auto_pick_check")
+                    with col_v2:
+                        if auto_pick:
+                            max_vel_idx = np.argmax(spectrum[time_idx, :])
+                            pick_velocity = float(velocities[max_vel_idx])
+                            st.info(f"自动拾取速度: **{pick_velocity:.0f} m/s**")
+                        else:
+                            pick_velocity = st.slider(
+                                "拾取速度 (m/s)",
+                                float(velocities[0]),
+                                float(velocities[-1]),
+                                float(velocities[len(velocities) // 2]),
+                                step=float(velocities[1] - velocities[0]),
+                                key="pick_vel_slider"
+                            )
+                    
+                    semblance_value = float(spectrum[time_idx, np.argmin(np.abs(velocities - pick_velocity))])
+                    
+                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+                    with col_btn1:
+                        if st.button("➕ 添加拾取点", type="primary", use_container_width=True):
+                            if 'velocity_picks' not in st.session_state:
+                                st.session_state.velocity_picks = result['velocity_picks'].copy() if result['velocity_picks'] else []
+                            
+                            new_pick = {
+                                'time': pick_time,
+                                'velocity': pick_velocity,
+                                'semblance': semblance_value
+                            }
+                            st.session_state.velocity_picks.append(new_pick)
+                            st.session_state.velocity_picks = sorted(st.session_state.velocity_picks, key=lambda x: x['time'])
+                            st.success(f"已添加拾取点: t={pick_time:.3f}s, v={pick_velocity:.0f}m/s")
+                            st.rerun()
+                    
+                    with col_btn2:
+                        if st.button("🔙 撤销上一个", use_container_width=True):
+                            if 'velocity_picks' in st.session_state and st.session_state.velocity_picks:
+                                removed = st.session_state.velocity_picks.pop()
+                                st.info(f"已移除拾取点: t={removed['time']:.3f}s, v={removed['velocity']:.0f}m/s")
+                                st.rerun()
+                    
+                    with col_btn3:
+                        if st.button("🗑️ 清空所有", use_container_width=True):
+                            st.session_state.velocity_picks = []
+                            st.info("已清空所有拾取点")
+                            st.rerun()
+                    
+                    if 'velocity_picks' not in st.session_state:
+                        st.session_state.velocity_picks = result['velocity_picks'].copy() if result['velocity_picks'] else []
+                    
+                    current_picks = st.session_state.velocity_picks
+                    
+                    with st.spinner("绘制交互式速度谱..."):
+                        fig_spec, ax = plt.subplots(figsize=(12, 8))
+                        
+                        vmax = np.max(spectrum)
+                        im = ax.imshow(spectrum, aspect='auto', cmap='jet',
+                                     extent=[velocities[0], velocities[-1], times_spec[-1], times_spec[0]],
+                                     vmin=0, vmax=vmax)
+                        
+                        ax.axhline(pick_time, color='white', linestyle='--', linewidth=1.5, alpha=0.8)
+                        ax.axvline(pick_velocity, color='white', linestyle='--', linewidth=1.5, alpha=0.8)
+                        ax.plot(pick_velocity, pick_time, 'wo', markersize=10, markeredgecolor='red', markeredgewidth=2)
+                        
+                        if current_picks:
+                            pick_times = [p['time'] for p in current_picks]
+                            pick_vels = [p['velocity'] for p in current_picks]
+                            ax.plot(pick_vels, pick_times, 'w-', linewidth=2, alpha=0.7, label='速度函数')
+                            ax.plot(pick_vels, pick_times, 'wo', markersize=8, markeredgecolor='cyan', markeredgewidth=2, label='拾取点')
+                            ax.legend(loc='upper right')
+                        
+                        ax.set_xlabel('速度 (m/s)', fontsize=12)
+                        ax.set_ylabel('时间 (s)', fontsize=12)
+                        ax.set_title(f'CDP {cdp_number} 速度谱 - 拾取模式', fontsize=14, fontweight='bold')
+                        cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+                        cbar.set_label('Semblance 相干值', fontsize=10)
+                        plt.tight_layout()
+                        buf_spec = figure_to_bytes(fig_spec)
+                        st.image(buf_spec, use_column_width=True, caption=f"拾取点: t={pick_time:.3f}s, v={pick_velocity:.0f}m/s, 相干值={semblance_value:.3f}")
                 
-                st.subheader("速度拾取")
-                picks_df = pd.DataFrame(result['velocity_picks'])
-                if not picks_df.empty:
-                    picks_df = picks_df[['time', 'velocity', 'semblance']]
-                    picks_df.columns = ['时间 (s)', '速度 (m/s)', '相干值']
-                    st.dataframe(picks_df, hide_index=True)
-                
-                fig_vfunc, ax = plt.subplots(figsize=(10, 4))
-                ax.plot(result['velocity_function'], np.arange(data['n_samples']) * dt, 'b-', linewidth=2)
-                ax.set_xlabel('速度 (m/s)')
-                ax.set_ylabel('时间 (s)')
-                ax.set_title('NMO速度函数')
-                ax.grid(True, alpha=0.3)
-                ax.invert_yaxis()
-                buf_vfunc = figure_to_bytes(fig_vfunc)
-                st.image(buf_vfunc, use_column_width=True)
+                with col_pick2:
+                    st.markdown("##### 📋 已拾取点列表")
+                    
+                    picks_df = pd.DataFrame(current_picks)
+                    if not picks_df.empty:
+                        picks_df_display = picks_df[['time', 'velocity', 'semblance']].copy()
+                        picks_df_display.columns = ['时间 (s)', '速度 (m/s)', '相干值']
+                        picks_df_display.index = np.arange(1, len(picks_df_display) + 1)
+                        st.dataframe(picks_df_display, use_container_width=True, height=300)
+                        
+                        st.markdown("##### ⚙️ 速度函数插值")
+                        interp_method = st.radio("插值方法", ["线性", "样条"], horizontal=True, key="interp_method")
+                        
+                        if len(current_picks) >= 2:
+                            if 'velocity_function' not in st.session_state or st.button("🔄 更新速度函数", type="primary", use_container_width=True):
+                                from scipy.interpolate import interp1d
+                                
+                                pick_times_arr = np.array([p['time'] for p in current_picks])
+                                pick_vels_arr = np.array([p['velocity'] for p in current_picks])
+                                
+                                if interp_method == "线性":
+                                    f_interp = interp1d(pick_times_arr, pick_vels_arr, kind='linear',
+                                                      bounds_error=False, fill_value='extrapolate')
+                                else:
+                                    if len(current_picks) >= 3:
+                                        f_interp = interp1d(pick_times_arr, pick_vels_arr, kind='cubic',
+                                                          bounds_error=False, fill_value='extrapolate')
+                                    else:
+                                        f_interp = interp1d(pick_times_arr, pick_vels_arr, kind='linear',
+                                                          bounds_error=False, fill_value='extrapolate')
+                                
+                                times_full = np.arange(data['n_samples']) * dt
+                                velocity_function = f_interp(times_full)
+                                velocity_function = np.clip(velocity_function, velocities[0], velocities[-1])
+                                
+                                st.session_state.velocity_function = velocity_function
+                                result['velocity_function'] = velocity_function
+                                result['velocity_picks'] = current_picks
+                                st.success("速度函数已更新！")
+                        else:
+                            st.info("至少需要2个拾取点才能生成速度函数")
+                    else:
+                        st.info("暂无拾取点，请在左侧速度谱上点选")
+                    
+                    if 'velocity_function' in st.session_state:
+                        st.markdown("##### 📈 NMO速度函数")
+                        fig_vfunc, ax = plt.subplots(figsize=(6, 5))
+                        times_full = np.arange(data['n_samples']) * dt
+                        ax.plot(st.session_state.velocity_function, times_full, 'b-', linewidth=2)
+                        if current_picks:
+                            ax.plot([p['velocity'] for p in current_picks],
+                                  [p['time'] for p in current_picks],
+                                  'ro', markersize=6, label='拾取点')
+                            ax.legend()
+                        ax.set_xlabel('速度 (m/s)')
+                        ax.set_ylabel('时间 (s)')
+                        ax.set_title('NMO速度函数')
+                        ax.grid(True, alpha=0.3)
+                        ax.invert_yaxis()
+                        buf_vfunc = figure_to_bytes(fig_vfunc)
+                        st.image(buf_vfunc, use_column_width=True)
+                        
+                        if st.button("✨ 应用速度函数到NMO校正", type="primary", use_container_width=True):
+                            result['velocity_function'] = st.session_state.velocity_function
+                            result['velocity_picks'] = current_picks
+                            
+                            with st.spinner("重新进行NMO校正..."):
+                                nmo_params_new = NMOParams(
+                                    stretch_limit=stretch_limit,
+                                    mute_near_offsets=mute_near,
+                                    mute_far_offsets=mute_far
+                                )
+                                nmo_result_new = nmo_correct_gather(
+                                    cdp_traces, cdp_offsets, dt,
+                                    result['velocity_function'],
+                                    nmo_params_new
+                                )
+                                result['nmo_result'] = nmo_result_new
+                                
+                                stacked_trace_new = np.sum(
+                                    nmo_result_new['corrected_gather'] * nmo_result_new['mute_masks'],
+                                    axis=0
+                                ) / np.maximum(np.sum(nmo_result_new['mute_masks'], axis=0), 1)
+                                result['stacked_trace'] = stacked_trace_new
+                                
+                                st.session_state.stacking_result = result
+                                st.success("已应用新的速度函数！切换到其他tab查看结果")
             
             with tab3:
                 st.subheader("NMO校正结果")
