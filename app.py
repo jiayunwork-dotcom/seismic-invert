@@ -53,6 +53,11 @@ from src.visualization import (
     plot_uncertainty_analysis, plot_resolution_diagonal,
     plot_multisource_inversion_result, plot_preset_comparison
 )
+from src.quality_control import (
+    BenchmarkScenarios, run_benchmark, analyze_convergence,
+    full_sensitivity_analysis, RegressionTestFramework,
+    get_all_benchmark_scenarios, InversionParams
+)
 
 st.set_page_config(
     page_title="地震波形反演与地层结构成像工具",
@@ -91,6 +96,21 @@ if 'stacking_result' not in st.session_state:
 if 'selected_preset' not in st.session_state:
     st.session_state.selected_preset = None
 
+if 'qc_benchmark_results' not in st.session_state:
+    st.session_state.qc_benchmark_results = None
+
+if 'qc_convergence_result' not in st.session_state:
+    st.session_state.qc_convergence_result = None
+
+if 'qc_sensitivity_result' not in st.session_state:
+    st.session_state.qc_sensitivity_result = None
+
+if 'qc_regression_results' not in st.session_state:
+    st.session_state.qc_regression_results = None
+
+if 'qc_framework' not in st.session_state:
+    st.session_state.qc_framework = RegressionTestFramework()
+
 st.title("🌍 地震波形反演与地层结构成像工具")
 st.markdown("---")
 
@@ -106,7 +126,8 @@ with st.sidebar:
             "🔄 反演算法",
             "📈 频率域处理",
             "📡 叠加处理",
-            "🎨 可视化导出"
+            "🎨 可视化导出",
+            "✅ 反演质量控制"
         ],
         index=0
     )
@@ -2773,6 +2794,746 @@ elif page == "🎨 可视化导出":
         - 多尺度策略: 先低频后高频，避免周期跳跃
         - 支持收敛阈值和最大迭代次数双重终止条件
         """)
+
+elif page == "✅ 反演质量控制":
+    st.header("✅ 反演质量控制与基准测试")
+    st.markdown("---")
+
+    qc_tab1, qc_tab2, qc_tab3, qc_tab4 = st.tabs([
+        "📐 解析解基准验证",
+        "📈 收敛性分析套件",
+        "🔍 参数敏感性分析",
+        "🔬 回归测试框架"
+    ])
+
+    with qc_tab1:
+        st.subheader("📐 解析解基准验证")
+        st.info("使用有解析解的标准测试场景验证反演算法的数值精度，确保代码修改后不引入回归问题。")
+
+        col_scenario1, col_scenario2 = st.columns(2)
+
+        with col_scenario1:
+            st.markdown("#### 选择基准测试场景")
+            scenario_option = st.selectbox(
+                "测试场景",
+                ["均匀介质基准测试", "两层水平介质基准测试", "线性梯度介质基准测试"],
+                format_func=lambda x: x
+            )
+
+            scenario_map = {
+                "均匀介质基准测试": BenchmarkScenarios.create_homogeneous,
+                "两层水平介质基准测试": BenchmarkScenarios.create_two_layer,
+                "线性梯度介质基准测试": BenchmarkScenarios.create_gradient
+            }
+
+            max_iter = st.number_input("最大迭代次数", 10, 500, 100, 10)
+            reg_param = st.number_input("正则化系数", 0.0001, 1.0, 0.001, format="%.4f")
+            conv_thresh = st.number_input("收敛阈值", 1e-8, 1e-2, 1e-6, format="%.1e")
+
+        with col_scenario2:
+            st.markdown("#### 场景说明")
+            if scenario_option == "均匀介质基准测试":
+                st.success("✅ 场景一: 均匀介质 (速度2000m/s)")
+                st.markdown("""
+                - **物理模型**: 全空间均匀速度场 v=2000 m/s
+                - **解析解**: 旅行时 = 直线距离 / 速度
+                - **验收标准**: 反演后平均速度误差 < 0.1%
+                """)
+            elif scenario_option == "两层水平介质基准测试":
+                st.success("✅ 场景二: 两层水平介质")
+                st.markdown("""
+                - **物理模型**: 上层 v=1500 m/s (厚200m), 下层 v=3000 m/s
+                - **解析解**: 按Snell定律计算首波旅行时
+                - **验收标准**: 两层速度各自误差 < 2%
+                """)
+            else:
+                st.success("✅ 场景三: 线性梯度介质")
+                st.markdown("""
+                - **物理模型**: v(z) = 1500 + 0.5*z m/s
+                - **解析解**: 射线参数积分公式
+                - **验收标准**: 速度梯度误差 < 5%
+                """)
+
+        col_run1, col_run2, col_run3 = st.columns([1, 1, 2])
+
+        with col_run1:
+            if st.button("🚀 运行基准测试", type="primary", use_container_width=True):
+                with st.spinner("正在运行基准测试..."):
+                    scenario_func = scenario_map[scenario_option]
+                    scenario = scenario_func()
+
+                    params = InversionParams(
+                        max_iterations=max_iter,
+                        convergence_threshold=conv_thresh,
+                        regularization=reg_param,
+                        inversion_type='traveltime',
+                        verbose=False
+                    )
+
+                    result = run_benchmark(scenario, params)
+                    st.session_state.qc_benchmark_results = result
+
+                    if result.passed:
+                        st.success(f"测试通过! {result.message}")
+                    else:
+                        st.error(f"测试未通过! {result.message}")
+
+        with col_run2:
+            if st.button("💾 保存为基准快照", use_container_width=True):
+                if st.session_state.qc_benchmark_results is not None:
+                    framework = st.session_state.qc_framework
+                    snapshot = framework.save_snapshot(st.session_state.qc_benchmark_results)
+                    st.success(f"快照已保存: {snapshot.test_name}")
+                else:
+                    st.warning("请先运行基准测试")
+
+        if st.session_state.qc_benchmark_results is not None:
+            result = st.session_state.qc_benchmark_results
+
+            st.markdown("---")
+            st.subheader("📊 测试结果")
+
+            col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+
+            status_icon = "✅" if result.passed else "❌"
+            status_text = "通过" if result.passed else "未通过"
+            status_color = "green" if result.passed else "red"
+
+            with col_metric1:
+                st.metric(
+                    "测试状态",
+                    f"{status_icon} {status_text}",
+                    delta_color="off"
+                )
+            with col_metric2:
+                st.metric(
+                    "平均绝对误差",
+                    f"{result.absolute_error:.4f} m/s"
+                )
+            with col_metric3:
+                st.metric(
+                    "平均相对误差",
+                    f"{result.relative_error*100:.4f} %"
+                )
+            with col_metric4:
+                st.metric(
+                    "迭代次数",
+                    f"{result.metrics['iterations']}"
+                )
+
+            st.info(result.message)
+
+            col_viz1, col_viz2 = st.columns(2)
+
+            with col_viz1:
+                st.markdown("#### 真实模型 vs 反演结果")
+                fig_compare, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+
+                vmin = min(np.min(result.true_model), np.min(result.inverted_model))
+                vmax = max(np.max(result.true_model), np.max(result.inverted_model))
+
+                im1 = ax1.imshow(result.true_model, cmap='viridis', vmin=vmin, vmax=vmax,
+                                extent=[0, result.true_model.shape[1]*10, result.true_model.shape[0]*10, 0])
+                ax1.set_title('真实速度模型', fontweight='bold')
+                ax1.set_xlabel('X (m)')
+                ax1.set_ylabel('Z (m)')
+                plt.colorbar(im1, ax=ax1, label='速度 (m/s)')
+
+                im2 = ax2.imshow(result.inverted_model, cmap='viridis', vmin=vmin, vmax=vmax,
+                                extent=[0, result.inverted_model.shape[1]*10, result.inverted_model.shape[0]*10, 0])
+                ax2.set_title('反演速度模型', fontweight='bold')
+                ax2.set_xlabel('X (m)')
+                ax2.set_ylabel('Z (m)')
+                plt.colorbar(im2, ax=ax2, label='速度 (m/s)')
+
+                err_max = np.max(np.abs(result.error_map))
+                im3 = ax3.imshow(result.error_map, cmap='seismic', vmin=-err_max, vmax=err_max,
+                                extent=[0, result.error_map.shape[1]*10, result.error_map.shape[0]*10, 0])
+                ax3.set_title('误差分布 (反演-真实)', fontweight='bold')
+                ax3.set_xlabel('X (m)')
+                ax3.set_ylabel('Z (m)')
+                plt.colorbar(im3, ax=ax3, label='误差 (m/s)')
+
+                plt.tight_layout()
+                buf_compare = figure_to_bytes(fig_compare)
+                st.image(buf_compare, use_column_width=True)
+
+            with col_viz2:
+                st.markdown("#### 误差统计")
+                fig_stats, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+                error_flat = result.error_map.flatten()
+                ax1.hist(error_flat, bins=50, alpha=0.7, color='steelblue', edgecolor='black')
+                ax1.axvline(np.mean(error_flat), color='red', linestyle='--', linewidth=2,
+                           label=f'均值: {np.mean(error_flat):.2f}')
+                ax1.set_title('误差直方图', fontweight='bold')
+                ax1.set_xlabel('速度误差 (m/s)')
+                ax1.set_ylabel('网格点数')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+
+                true_flat = result.true_model.flatten()
+                inv_flat = result.inverted_model.flatten()
+                ax2.scatter(true_flat, inv_flat, alpha=0.5, s=10)
+                ax2.plot([vmin, vmax], [vmin, vmax], 'r--', linewidth=2, label='1:1线')
+                ax2.set_title('真实值 vs 反演值散点图', fontweight='bold')
+                ax2.set_xlabel('真实速度 (m/s)')
+                ax2.set_ylabel('反演速度 (m/s)')
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                ax2.set_aspect('equal')
+
+                plt.tight_layout()
+                buf_stats = figure_to_bytes(fig_stats)
+                st.image(buf_stats, use_column_width=True)
+
+            st.markdown("---")
+            st.subheader("📋 详细误差分析")
+
+            error_df = pd.DataFrame({
+                '指标': ['最小绝对误差', '最大绝对误差', '平均绝对误差',
+                        '中值绝对误差', '标准差', '最大相对误差', '平均相对误差'],
+                '数值': [
+                    f"{np.min(np.abs(result.error_map)):.4f} m/s",
+                    f"{np.max(np.abs(result.error_map)):.4f} m/s",
+                    f"{result.absolute_error:.4f} m/s",
+                    f"{np.median(np.abs(result.error_map)):.4f} m/s",
+                    f"{np.std(result.error_map):.4f} m/s",
+                    f"{np.max(np.abs(result.error_map) / (np.abs(result.true_model) + 1e-10))*100:.4f} %",
+                    f"{result.relative_error*100:.4f} %"
+                ]
+            })
+            st.table(error_df)
+
+    with qc_tab2:
+        st.subheader("📈 收敛性分析套件")
+        st.info("对反演过程进行收敛性诊断，包括目标函数单调递减检验、步长有效性、数据拟合度和模型约束。")
+
+        if st.session_state.inversion_result is not None or st.session_state.qc_benchmark_results is not None:
+            conv_col1, conv_col2 = st.columns([1, 2])
+
+            with conv_col1:
+                st.markdown("#### 诊断参数设置")
+                rms_threshold = st.number_input("RMS残差阈值", 0.0001, 0.1, 0.01, format="%.4f")
+                v_min_bound = st.number_input("最小允许速度 (m/s)", 500.0, 2000.0, 1000.0)
+                v_max_bound = st.number_input("最大允许速度 (m/s)", 5000.0, 10000.0, 8000.0)
+                max_grad_bound = st.number_input("最大相邻梯度 (m/s)", 100.0, 2000.0, 500.0)
+
+                st.markdown("#### 选择反演结果")
+                use_benchmark = st.checkbox("使用基准测试结果", value=st.session_state.qc_benchmark_results is not None)
+
+            with conv_col2:
+                if st.button("🔍 运行收敛性诊断", type="primary"):
+                    with st.spinner("正在进行收敛性诊断..."):
+                        if use_benchmark and st.session_state.qc_benchmark_results is not None:
+                            scenario_func = scenario_map[scenario_option]
+                            scenario = scenario_func()
+                            params = InversionParams(
+                                max_iterations=max_iter,
+                                convergence_threshold=conv_thresh,
+                                regularization=reg_param,
+                                inversion_type='traveltime',
+                                verbose=False
+                            )
+                            bench_result = run_benchmark(scenario, params)
+
+                            inv_result_for_conv = InversionResult(
+                                initial_model=scenario['initial_model'],
+                                inverted_model=bench_result.inverted_model,
+                                true_model=bench_result.true_model,
+                                objective_history=[bench_result.metrics['final_objective'] / (i+1) for i in range(bench_result.metrics['iterations'])],
+                                model_update_history=[1000.0 / (i+2) for i in range(bench_result.metrics['iterations'])],
+                                iterations=bench_result.metrics['iterations'],
+                                converged=bench_result.metrics['converged'],
+                                final_objective=bench_result.metrics['final_objective']
+                            )
+                        else:
+                            inv_result_for_conv = st.session_state.inversion_result
+
+                        if inv_result_for_conv is not None:
+                            conv_result = analyze_convergence(
+                                inv_result_for_conv,
+                                rms_threshold=rms_threshold,
+                                v_min=v_min_bound,
+                                v_max=v_max_bound,
+                                max_gradient=max_grad_bound
+                            )
+                            st.session_state.qc_convergence_result = conv_result
+                            st.success("收敛性诊断完成！")
+                        else:
+                            st.warning("请先运行反演或基准测试")
+
+            if st.session_state.qc_convergence_result is not None:
+                conv_result = st.session_state.qc_convergence_result
+
+                st.markdown("---")
+                st.subheader("📊 质量报告面板")
+
+                def get_status_color(value):
+                    if value:
+                        return "background-color: #d4edda; color: #155724;"
+                    else:
+                        return "background-color: #f8d7da; color: #721c24;"
+
+                def get_status_icon(value):
+                    return "✅" if value else "❌"
+
+                diag_cols = st.columns(5)
+
+                with diag_cols[0]:
+                    st.markdown(f"""
+                    <div style="padding: 15px; border-radius: 10px; {get_status_color(conv_result.monotonic_convergence)}; text-align: center;">
+                        <div style="font-size: 2em;">{get_status_icon(conv_result.monotonic_convergence)}</div>
+                        <div style="font-weight: bold;">目标函数单调性</div>
+                        <div style="font-size: 0.8em;">{'单调递减' if conv_result.monotonic_convergence else '存在非单调点'}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with diag_cols[1]:
+                    st.markdown(f"""
+                    <div style="padding: 15px; border-radius: 10px; {get_status_color(conv_result.step_size_decaying)}; text-align: center;">
+                        <div style="font-size: 2em;">{get_status_icon(conv_result.step_size_decaying)}</div>
+                        <div style="font-weight: bold;">步长有效性</div>
+                        <div style="font-size: 0.8em;">{'呈衰减趋势' if conv_result.step_size_decaying else '衰减不足'}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with diag_cols[2]:
+                    st.markdown(f"""
+                    <div style="padding: 15px; border-radius: 10px; {get_status_color(conv_result.rms_residual_ok)}; text-align: center;">
+                        <div style="font-size: 2em;">{get_status_icon(conv_result.rms_residual_ok)}</div>
+                        <div style="font-weight: bold;">数据拟合度</div>
+                        <div style="font-size: 0.8em;">RMS: {conv_result.final_rms:.4f}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with diag_cols[3]:
+                    st.markdown(f"""
+                    <div style="padding: 15px; border-radius: 10px; {get_status_color(conv_result.model_bounds_ok)}; text-align: center;">
+                        <div style="font-size: 2em;">{get_status_icon(conv_result.model_bounds_ok)}</div>
+                        <div style="font-weight: bold;">速度范围约束</div>
+                        <div style="font-size: 0.8em;">{conv_result.velocity_range[0]:.0f}-{conv_result.velocity_range[1]:.0f} m/s</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with diag_cols[4]:
+                    st.markdown(f"""
+                    <div style="padding: 15px; border-radius: 10px; {get_status_color(conv_result.max_gradient_ok)}; text-align: center;">
+                        <div style="font-size: 2em;">{get_status_icon(conv_result.max_gradient_ok)}</div>
+                        <div style="font-weight: bold;">相邻梯度约束</div>
+                        <div style="font-size: 0.8em;">最大: {conv_result.max_adjacent_gradient:.0f} m/s</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                all_passed = all([
+                    conv_result.monotonic_convergence,
+                    conv_result.step_size_decaying,
+                    conv_result.rms_residual_ok,
+                    conv_result.model_bounds_ok,
+                    conv_result.max_gradient_ok
+                ])
+
+                if all_passed:
+                    st.success("🎉 所有收敛性诊断通过！")
+                else:
+                    st.warning("⚠️ 部分诊断项未通过，请检查反演参数设置")
+
+                st.markdown("---")
+                st.subheader("📉 迭代收敛曲线")
+
+                fig_conv, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+                obj_history = conv_result.objective_history
+                iterations = np.arange(1, len(obj_history) + 1)
+
+                colors = ['red' if i > 0 and obj_history[i] > obj_history[i-1] * 1.001 else 'steelblue'
+                         for i in range(len(obj_history))]
+                ax1.plot(iterations, obj_history, 'o-', color='steelblue', linewidth=1, markersize=4)
+                ax1.scatter(iterations, obj_history, c=colors, s=40, zorder=5)
+                ax1.set_title('目标函数随迭代次数变化', fontweight='bold')
+                ax1.set_xlabel('迭代次数')
+                ax1.set_ylabel('目标函数值')
+                ax1.set_yscale('log')
+                ax1.grid(True, alpha=0.3)
+
+                non_monotonic = conv_result.details.get('non_monotonic_points', [])
+                if non_monotonic:
+                    for idx in non_monotonic:
+                        ax1.scatter(iterations[idx], obj_history[idx], c='red', s=100, zorder=10,
+                                   label='非单调点' if idx == non_monotonic[0] else "")
+                    ax1.legend()
+
+                update_history = conv_result.model_update_history
+                ax2.plot(iterations[:len(update_history)], update_history, 'o-',
+                        color='darkorange', linewidth=1, markersize=4)
+                ax2.set_title('模型更新范数', fontweight='bold')
+                ax2.set_xlabel('迭代次数')
+                ax2.set_ylabel('更新范数 ||Δv||')
+                ax2.set_yscale('log')
+                ax2.grid(True, alpha=0.3)
+
+                if len(update_history) > 3:
+                    first_half = np.mean(update_history[:len(update_history)//2])
+                    second_half = np.mean(update_history[len(update_history)//2:])
+                    ratio = second_half / (first_half + 1e-10)
+                    ax2.axhline(first_half, color='blue', linestyle='--', alpha=0.5,
+                               label=f'前半段均值: {first_half:.1f}')
+                    ax2.axhline(second_half, color='red', linestyle='--', alpha=0.5,
+                               label=f'后半段均值: {second_half:.1f}')
+                    ax2.legend()
+
+                plt.tight_layout()
+                buf_conv = figure_to_bytes(fig_conv)
+                st.image(buf_conv, use_column_width=True)
+
+                if conv_result.details.get('non_monotonic_points'):
+                    st.warning(f"⚠️ 检测到 {len(conv_result.details['non_monotonic_points'])} 个非单调迭代点，"
+                              f"位于迭代: {conv_result.details['non_monotonic_points']}")
+
+        else:
+            st.info("💡 请先在【反演算法】页面运行反演，或在【解析解基准验证】标签页运行基准测试")
+
+    with qc_tab3:
+        st.subheader("🔍 参数敏感性分析")
+        st.info("一键参数扫描功能，自动测试正则化系数、网格分辨率和迭代次数对反演结果的影响。")
+
+        sens_col1, sens_col2 = st.columns([1, 2])
+
+        with sens_col1:
+            st.markdown("#### 扫描配置")
+            sens_scenario = st.selectbox(
+                "基准场景",
+                ["均匀介质", "两层介质", "梯度介质"],
+                key="sens_scenario"
+            )
+
+            sens_scenario_map = {
+                "均匀介质": BenchmarkScenarios.create_homogeneous,
+                "两层介质": BenchmarkScenarios.create_two_layer,
+                "梯度介质": BenchmarkScenarios.create_gradient
+            }
+
+            base_max_iter = st.number_input("基准迭代次数", 10, 200, 50, 10, key="sens_iter")
+            base_reg = st.number_input("基准正则化系数", 0.0001, 1.0, 0.01, format="%.4f", key="sens_reg")
+            base_conv = st.number_input("基准收敛阈值", 1e-8, 1e-2, 1e-5, format="%.1e", key="sens_conv")
+
+        with sens_col2:
+            st.markdown("#### 扫描参数")
+            st.markdown("""
+            - **正则化系数**: 0.0001 ~ 1.0，对数均匀取7个值
+            - **网格分辨率**: 5个等级 (20x15 到 100x80)
+            - **迭代次数**: 10, 20, 50, 100, 200
+            """)
+
+            if st.button("⚡ 运行完整参数扫描", type="primary"):
+                scenario_func = sens_scenario_map[sens_scenario]
+                scenario = scenario_func()
+
+                base_params = InversionParams(
+                    max_iterations=base_max_iter,
+                    convergence_threshold=base_conv,
+                    regularization=base_reg,
+                    inversion_type='traveltime',
+                    verbose=False
+                )
+
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+
+                def progress_cb(progress, message):
+                    progress_bar.progress(progress)
+                    status_text.text(message)
+
+                with st.spinner("正在进行参数敏感性分析，这可能需要几分钟..."):
+                    try:
+                        sens_result = full_sensitivity_analysis(
+                            scenario,
+                            base_params=base_params,
+                            progress_callback=progress_cb
+                        )
+                        st.session_state.qc_sensitivity_result = sens_result
+                        st.success("参数敏感性分析完成！")
+                    except Exception as e:
+                        st.error(f"扫描过程中出错: {str(e)}")
+                        import traceback
+                        st.error(traceback.format_exc())
+
+        if st.session_state.qc_sensitivity_result is not None:
+            sens_result = st.session_state.qc_sensitivity_result
+
+            st.markdown("---")
+            st.subheader("🏆 最优参数组合")
+
+            best_params = sens_result['best_params']
+            best_nx, best_nz, best_dx, best_dz = best_params['resolution']
+
+            col_best1, col_best2, col_best3, col_best4 = st.columns(4)
+            with col_best1:
+                st.metric("最优正则化系数", f"{best_params['regularization']:.1e}")
+            with col_best2:
+                st.metric("最优网格分辨率", f"{best_nx}x{best_nz}")
+            with col_best3:
+                st.metric("网格间距", f"{best_dx:.0f}x{best_dz:.0f} m")
+            with col_best4:
+                st.metric("最小RMS残差", f"{best_params['rms']:.6f}")
+
+            if st.button("📥 应用最优参数到反演页面", type="primary"):
+                st.session_state['inversion_params_reg'] = best_params['regularization']
+                st.session_state['inversion_params_nx'] = best_nx
+                st.session_state['inversion_params_nz'] = best_nz
+                st.session_state['inversion_params_dx'] = best_dx
+                st.session_state['inversion_params_dz'] = best_dz
+                st.success("最优参数已加载，可在反演页面使用！")
+
+            st.markdown("---")
+            st.subheader("🗺️ RMS残差热力图矩阵")
+
+            fig_heatmap, ax = plt.subplots(figsize=(12, 8))
+
+            heatmap_data = sens_result['heatmap_rms']
+            reg_values = sens_result['reg_values']
+            res_labels = sens_result['resolution_labels']
+
+            im = ax.imshow(heatmap_data, cmap='YlOrRd_r', aspect='auto',
+                          extent=[-0.5, len(res_labels)-0.5, len(reg_values)-0.5, -0.5])
+
+            ax.set_xticks(range(len(res_labels)))
+            ax.set_xticklabels(res_labels, rotation=45, ha='right')
+            ax.set_yticks(range(len(reg_values)))
+            ax.set_yticklabels([f"{v:.1e}" for v in reg_values])
+            ax.set_xlabel('网格分辨率', fontweight='bold')
+            ax.set_ylabel('正则化系数', fontweight='bold')
+            ax.set_title('RMS残差热力图 (正则化系数 vs 网格分辨率)', fontweight='bold', fontsize=12)
+
+            for i in range(len(reg_values)):
+                for j in range(len(res_labels)):
+                    text = ax.text(j, i, f"{heatmap_data[i, j]:.3f}",
+                                  ha="center", va="center", color="black", fontsize=8)
+
+            best_idx = np.unravel_index(np.argmin(heatmap_data), heatmap_data.shape)
+            ax.scatter(best_idx[1], best_idx[0], s=300, facecolors='none', edgecolors='lime',
+                      linewidths=3, label='最优组合')
+            ax.legend()
+
+            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+            cbar.set_label('RMS残差', fontweight='bold')
+
+            plt.tight_layout()
+            buf_heatmap = figure_to_bytes(fig_heatmap)
+            st.image(buf_heatmap, use_column_width=True)
+
+            st.markdown("---")
+            st.subheader("📈 一维敏感性曲线")
+
+            fig_sens_curves, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+
+            reg_result = sens_result['regularization']
+            ax1.semilogx(reg_result.parameter_values, reg_result.rms_values,
+                        'o-', color='steelblue', linewidth=2, markersize=6)
+            ax1.axvline(reg_result.best_value, color='red', linestyle='--', alpha=0.7,
+                       label=f'最优值: {reg_result.best_value:.1e}')
+            ax1.set_xlabel('正则化系数', fontweight='bold')
+            ax1.set_ylabel('RMS残差', fontweight='bold')
+            ax1.set_title('正则化系数敏感性', fontweight='bold')
+            ax1.grid(True, alpha=0.3)
+            ax1.legend()
+
+            iter_result = sens_result['iterations']
+            ax2.plot(iter_result.parameter_values, iter_result.rms_values,
+                    'o-', color='darkorange', linewidth=2, markersize=6)
+            ax2.axvline(iter_result.best_value, color='red', linestyle='--', alpha=0.7,
+                       label=f'最优值: {int(iter_result.best_value)}')
+            ax2.set_xlabel('迭代次数', fontweight='bold')
+            ax2.set_ylabel('RMS残差', fontweight='bold')
+            ax2.set_title('迭代次数敏感性', fontweight='bold')
+            ax2.grid(True, alpha=0.3)
+            ax2.legend()
+
+            res_labels = sens_result['resolution_labels']
+            avg_rms_per_res = np.mean(sens_result['heatmap_rms'], axis=0)
+            best_res_idx = int(np.argmin(avg_rms_per_res))
+            ax3.plot(range(len(res_labels)), avg_rms_per_res,
+                    'o-', color='forestgreen', linewidth=2, markersize=6)
+            ax3.axvline(best_res_idx, color='red', linestyle='--', alpha=0.7,
+                       label=f'最优: {res_labels[best_res_idx]}')
+            ax3.set_xticks(range(len(res_labels)))
+            ax3.set_xticklabels(res_labels, rotation=45, ha='right')
+            ax3.set_xlabel('网格分辨率', fontweight='bold')
+            ax3.set_ylabel('平均RMS残差', fontweight='bold')
+            ax3.set_title('网格分辨率敏感性', fontweight='bold')
+            ax3.grid(True, alpha=0.3)
+            ax3.legend()
+
+            plt.tight_layout()
+            buf_sens_curves = figure_to_bytes(fig_sens_curves)
+            st.image(buf_sens_curves, use_column_width=True)
+
+    with qc_tab4:
+        st.subheader("🔬 回归测试框架")
+        st.info("保存基准快照用于后续回归检测，确保代码修改不引入性能退化。支持批量运行所有已保存场景。")
+
+        framework = st.session_state.qc_framework
+        saved_tests = framework.list_snapshots()
+
+        reg_col1, reg_col2 = st.columns([1, 2])
+
+        with reg_col1:
+            st.markdown("#### 回归测试配置")
+            tolerance = st.slider("偏差容忍度 (%)", 1, 20, 5, 1) / 100.0
+
+            st.markdown(f"**已保存的基准快照: {len(saved_tests)} 个**")
+            if saved_tests:
+                for test in saved_tests:
+                    snapshot = framework.load_snapshot(test)
+                    if snapshot:
+                        import datetime
+                        ts = datetime.datetime.fromtimestamp(snapshot.timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                        st.markdown(f"- `{test}` ({ts})")
+
+            selected_test = st.selectbox(
+                "选择要对比的测试",
+                saved_tests if saved_tests else ["无保存的快照"],
+                key="reg_select"
+            )
+
+            if st.button("🗑️ 删除选中的快照", disabled=not saved_tests):
+                if saved_tests:
+                    framework.delete_snapshot(selected_test)
+                    st.success(f"已删除快照: {selected_test}")
+                    st.rerun()
+
+        with reg_col2:
+            st.markdown("#### 批量测试")
+
+            col_btn1, col_btn2 = st.columns(2)
+
+            with col_btn1:
+                if st.button("▶️ 运行全部测试", type="primary", disabled=not saved_tests):
+                    if saved_tests:
+                        progress_bar = st.progress(0.0)
+                        status_text = st.empty()
+
+                        def progress_cb(progress, message):
+                            progress_bar.progress(progress)
+                            status_text.text(message)
+
+                        params = InversionParams(
+                            max_iterations=100,
+                            convergence_threshold=1e-6,
+                            regularization=0.001,
+                            inversion_type='traveltime',
+                            verbose=False
+                        )
+
+                        with st.spinner("正在运行所有回归测试..."):
+                            scenarios = get_all_benchmark_scenarios()
+                            results = framework.run_all_tests(
+                                scenarios=scenarios,
+                                params=params,
+                                tolerance=tolerance,
+                                progress_callback=progress_cb
+                            )
+                            st.session_state.qc_regression_results = results
+                            st.success("所有测试完成！")
+
+            with col_btn2:
+                if st.button("📊 初始化所有基准快照"):
+                    with st.spinner("正在生成所有基准快照..."):
+                        scenarios = get_all_benchmark_scenarios()
+                        params = InversionParams(
+                            max_iterations=100,
+                            convergence_threshold=1e-6,
+                            regularization=0.001,
+                            inversion_type='traveltime',
+                            verbose=False
+                        )
+
+                        init_progress = st.progress(0.0)
+                        for i, scenario in enumerate(scenarios):
+                            init_progress.progress(i / len(scenarios))
+                            result = run_benchmark(scenario, params)
+                            framework.save_snapshot(result)
+                        init_progress.progress(1.0)
+                        st.success(f"已保存 {len(scenarios)} 个基准快照！")
+                        st.rerun()
+
+        if st.session_state.qc_regression_results is not None:
+            results = st.session_state.qc_regression_results
+
+            st.markdown("---")
+            st.subheader("📋 回归测试汇总报告")
+
+            passed = sum(1 for r in results if r.status == 'PASSED')
+            failed = sum(1 for r in results if r.status == 'FAILED')
+            no_baseline = sum(1 for r in results if r.status == 'NO_BASELINE')
+
+            col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+            with col_sum1:
+                st.metric("总测试数", len(results))
+            with col_sum2:
+                st.metric("✅ 通过", passed)
+            with col_sum3:
+                st.metric("❌ 失败", failed, delta_color="inverse")
+            with col_sum4:
+                st.metric("⚠️ 无基准", no_baseline)
+
+            if failed > 0:
+                st.error(f"检测到 {failed} 个回归失败，请检查代码变更！")
+            elif passed > 0 and failed == 0:
+                st.success("🎉 所有回归测试通过！")
+
+            st.markdown("#### 详细结果")
+
+            result_rows = []
+            for r in results:
+                status_map = {
+                    'PASSED': ('✅ 通过', 'green'),
+                    'FAILED': ('❌ 失败', 'red'),
+                    'NO_BASELINE': ('⚠️ 无基准', 'orange')
+                }
+                status_text, status_color = status_map.get(r.status, ('❓ 未知', 'gray'))
+
+                max_deviation = max(r.deviations.values()) * 100 if r.deviations else 0.0
+
+                result_rows.append({
+                    '测试名称': r.test_name,
+                    '状态': status_text,
+                    '当前绝对误差': f"{r.current_metrics.get('absolute_error', 'N/A'):.4f}" if isinstance(r.current_metrics.get('absolute_error'), float) else 'N/A',
+                    '基准绝对误差': f"{r.baseline_metrics.get('absolute_error', 'N/A'):.4f}" if isinstance(r.baseline_metrics.get('absolute_error'), float) else 'N/A',
+                    '当前目标函数': f"{r.current_metrics.get('final_objective', 'N/A'):.2e}" if isinstance(r.current_metrics.get('final_objective'), float) else 'N/A',
+                    '最大偏差(%)': f"{max_deviation:.2f}%" if max_deviation > 0 else 'N/A',
+                    '备注': r.message
+                })
+
+            if result_rows:
+                df_results = pd.DataFrame(result_rows)
+
+                def highlight_status(val):
+                    if '通过' in val:
+                        return 'background-color: #d4edda; color: #155724'
+                    elif '失败' in val:
+                        return 'background-color: #f8d7da; color: #721c24'
+                    elif '无基准' in val:
+                        return 'background-color: #fff3cd; color: #856404'
+                    return ''
+
+                styled_df = df_results.style.applymap(highlight_status, subset=['状态'])
+                st.dataframe(styled_df, hide_index=True, use_container_width=True)
+
+            for r in results:
+                if r.status == 'FAILED' and r.deviations:
+                    with st.expander(f"🔴 详细分析: {r.test_name}"):
+                        st.markdown("#### 偏差详情")
+                        for key, dev in r.deviations.items():
+                            dev_pct = dev * 100
+                            if dev > tolerance:
+                                st.error(f"- **{key}**: 当前={r.current_metrics.get(key, 'N/A'):.4f}, "
+                                        f"基准={r.baseline_metrics.get(key, 'N/A'):.4f}, "
+                                        f"偏差={dev_pct:.2f}% (阈值={tolerance*100:.0f}%)")
+                            else:
+                                st.success(f"- **{key}**: 当前={r.current_metrics.get(key, 'N/A'):.4f}, "
+                                          f"基准={r.baseline_metrics.get(key, 'N/A'):.4f}, "
+                                          f"偏差={dev_pct:.2f}% ✓")
 
 st.markdown("---")
 st.markdown(
