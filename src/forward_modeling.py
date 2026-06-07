@@ -63,8 +63,8 @@ def check_stability(velocity: np.ndarray, dx: float, dz: float, dt: float,
     Returns:
         dict with stability check results and warnings
     """
-    v_min = np.min(velocity)
-    v_max = np.max(velocity)
+    v_min = float(np.min(velocity))
+    v_max = float(np.max(velocity))
     
     results = {
         'v_min': v_min,
@@ -76,23 +76,23 @@ def check_stability(velocity: np.ndarray, dx: float, dz: float, dt: float,
         'warnings': []
     }
     
-    cfl_number = v_max * dt / min(dx, dz)
-    cfl_limit = 1 / np.sqrt(2)
+    cfl_number = float(v_max * dt / min(dx, dz))
+    cfl_limit = float(1 / np.sqrt(2))
     results['cfl_number'] = cfl_number
     results['cfl_limit'] = cfl_limit
     
     if cfl_number > cfl_limit:
         results['cfl_ok'] = False
-        results['max_dt_stable'] = cfl_limit * min(dx, dz) / v_max
+        results['max_dt_stable'] = float(cfl_limit * min(dx, dz) / v_max)
         results['warnings'].append(
             f"CFL condition violated: CFL = {cfl_number:.3f} > {cfl_limit:.3f}. "
             f"Maximum stable dt = {results['max_dt_stable']*1000:.2f} ms"
         )
     else:
-        results['max_dt_stable'] = cfl_limit * min(dx, dz) / v_max
+        results['max_dt_stable'] = float(cfl_limit * min(dx, dz) / v_max)
     
     wavelength_min = v_min / f_max
-    points_per_wavelength = min(dx, dz) / wavelength_min
+    points_per_wavelength = float(min(dx, dz) / wavelength_min)
     results['points_per_wavelength'] = points_per_wavelength
     results['min_points_required'] = 10
     

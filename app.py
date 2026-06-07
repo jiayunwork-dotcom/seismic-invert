@@ -474,6 +474,8 @@ elif page == "📐 速度模型定义":
                         else:
                             fill_color = stroke_color
                         
+                        canvas_key = f"canvas_{canvas_mode}_{nx}_{nz}"
+                        
                         canvas_result = st_canvas(
                             fill_color=fill_color,
                             stroke_color=stroke_color,
@@ -483,77 +485,104 @@ elif page == "📐 速度模型定义":
                             height=canvas_height,
                             width=canvas_width,
                             drawing_mode=drawing_mode_map[canvas_mode],
-                            key="canvas_velocity",
+                            key=canvas_key,
                         )
+                        
+                        scale_x = nx / canvas_width
+                        scale_z = nz / canvas_height
+                        
+                        has_changes = False
+                        changes_description = ""
                         
                         if canvas_result.json_data is not None:
                             objects = canvas_result.json_data.get("objects", [])
                             
-                            if objects and canvas_mode != "画笔" and canvas_mode != "橡皮擦":
-                                last_obj = objects[-1]
-                                obj_type = last_obj.get("type")
-                                
-                                scale_x = nx / canvas_width
-                                scale_z = nz / canvas_height
-                                
-                                if canvas_mode == "区域填充" and obj_type == "rect":
-                                    x1 = int(last_obj["left"] * scale_x)
-                                    y1 = int(last_obj["top"] * scale_z)
-                                    w = int(last_obj["width"] * scale_x)
-                                    h = int(last_obj["height"] * scale_z)
-                                    x2 = min(nx - 1, x1 + w)
-                                    z2 = min(nz - 1, y1 + h)
-                                    x1, x2 = sorted([max(0, x1), max(0, x2)])
-                                    z1, z2 = sorted([max(0, y1), max(0, z2)])
+                            if canvas_mode == "区域填充":
+                                rects = [obj for obj in objects if obj.get("type") == "rect"]
+                                if rects:
+                                    st.info(f"📝 检测到 {len(rects)} 个矩形选区，点击下方按钮应用到模型")
                                     
-                                    model.fill_region(x1, x2, z1, z2, paint_v)
-                                    st.success(f"已填充区域: X[{x1}-{x2}], Z[{z1}-{z2}]")
-                                    canvas_result.json_data["objects"] = []
-                                    st.rerun()
-                                
-                                elif canvas_mode == "渐变填充" and obj_type == "line":
-                                    x1 = int(last_obj["x1"] * scale_x)
-                                    z1 = int(last_obj["y1"] * scale_z)
-                                    x2 = int(last_obj["x2"] * scale_x)
-                                    z2 = int(last_obj["y2"] * scale_z)
-                                    
-                                    if fill_direction == "垂直":
-                                        z_start, z_end = sorted([z1, z2])
-                                        for z in range(z_start, min(z_end + 1, nz)):
-                                            alpha = (z - z_start) / max(1, z_end - z_start)
-                                            v = v_start + (v_end - v_start) * alpha
-                                            model.velocity[z, :] = v
-                                    else:
-                                        x_start, x_end = sorted([x1, x2])
-                                        for x in range(x_start, min(x_end + 1, nx)):
-                                            alpha = (x - x_start) / max(1, x_end - x_start)
-                                            v = v_start + (v_end - v_start) * alpha
-                                            model.velocity[:, x] = v
-                                    
-                                    st.success("渐变填充完成！")
-                                    canvas_result.json_data["objects"] = []
-                                    st.rerun()
+                                    if st.button("✅ 应用区域填充到模型", type="primary", use_container_width=True):
+                                        for last_obj in rects:
+                                            x1 = int(last_obj["left"] * scale_x)
+                                            y1 = int(last_obj["top"] * scale_z)
+                                            w = int(last_obj["width"] * scale_x)
+                                            h = int(last_obj["height"] * scale_z)
+                                            x2 = min(nx - 1, x1 + w)
+                                            z2 = min(nz - 1, y1 + h)
+                                            x1, x2 = sorted([max(0, x1), max(0, x2)])
+                                            z1, z2 = sorted([max(0, y1), max(0, z2)])
+                                            model.fill_region(x1, x2, z1, z2, paint_v)
+                                        has_changes = True
+                                        changes_description = f"区域填充完成，共 {len(rects)} 个区域"
                             
-                            elif (canvas_mode == "画笔" or canvas_mode == "橡皮擦") and objects:
+                            elif canvas_mode == "渐变填充":
+                                lines = [obj for obj in objects if obj.get("type") == "line"]
+                                if lines:
+                                    st.info(f"📝 检测到 {len(lines)} 条渐变方向线，点击下方按钮应用到模型")
+                                    
+                                    if st.button("✅ 应用渐变填充到模型", type="primary", use_container_width=True):
+                                        for last_obj in lines:
+                                            x1 = int(last_obj["x1"] * scale_x)
+                                            z1 = int(last_obj["y1"] * scale_z)
+                                            x2 = int(last_obj["x2"] * scale_x)
+                                            z2 = int(last_obj["y2"] * scale_z)
+                                            
+                                            if fill_direction == "垂直":
+                                                z_start, z_end = sorted([z1, z2])
+                                                for z in range(z_start, min(z_end + 1, nz)):
+                                                    alpha = (z - z_start) / max(1, z_end - z_start)
+                                                    v = v_start + (v_end - v_start) * alpha
+                                                    model.velocity[z, :] = v
+                                            else:
+                                                x_start, x_end = sorted([x1, x2])
+                                                for x in range(x_start, min(x_end + 1, nx)):
+                                                    alpha = (x - x_start) / max(1, x_end - x_start)
+                                                    v = v_start + (v_end - v_start) * alpha
+                                                    model.velocity[:, x] = v
+                                        has_changes = True
+                                        changes_description = "渐变填充完成"
+                            
+                            elif canvas_mode == "画笔" or canvas_mode == "橡皮擦":
                                 paths = [obj for obj in objects if obj.get("type") == "path"]
                                 if paths:
-                                    for path in paths:
-                                        path_data = path.get("path", [])
-                                        for point in path_data:
-                                            if len(point) >= 2 and point[0] in ('Q', 'L', 'M'):
-                                                px = int(point[1] * scale_x)
-                                                pz = int(point[2] * scale_z)
-                                                if 0 <= px < nx and 0 <= pz < nz:
-                                                    radius = max(1, int(stroke_width * scale_x / 2))
-                                                    if canvas_mode == "橡皮擦":
-                                                        erase_v = v_min_display
-                                                        model.paint_velocity(px, pz, erase_v, radius)
-                                                    else:
-                                                        model.paint_velocity(px, pz, paint_v, radius)
+                                    total_points = sum(len(p.get("path", [])) for p in paths)
+                                    st.info(f"📝 检测到 {len(paths)} 条绘制路径，共约 {total_points} 个点，点击下方按钮应用到模型")
                                     
-                                    if paths:
-                                        canvas_result.json_data["objects"] = []
-                                        st.rerun()
+                                    if st.button("✅ 应用绘制到模型", type="primary", use_container_width=True):
+                                        paint_count = 0
+                                        for path in paths:
+                                            path_data = path.get("path", [])
+                                            for point in path_data:
+                                                if len(point) >= 3 and point[0] in ('Q', 'L', 'M', 'C'):
+                                                    px = int(point[1] * scale_x)
+                                                    pz = int(point[2] * scale_z)
+                                                    if 0 <= px < nx and 0 <= pz < nz:
+                                                        radius = max(1, int(stroke_width * scale_x / 3))
+                                                        if canvas_mode == "橡皮擦":
+                                                            erase_v = float(v_min_display)
+                                                            model.paint_velocity(px, pz, erase_v, radius)
+                                                        else:
+                                                            model.paint_velocity(px, pz, float(paint_v), radius)
+                                                        paint_count += 1
+                                        has_changes = True
+                                        changes_description = f"绘制完成，共处理 {paint_count} 个点"
+                        
+                        if has_changes:
+                            st.success(f"✅ {changes_description}！速度模型已更新。")
+                            st.rerun()
+                        
+                        if canvas_mode in ["区域填充", "渐变填充", "画笔", "橡皮擦"]:
+                            col_clear1, col_clear2 = st.columns(2)
+                            with col_clear1:
+                                if st.button("🔄 重置画布", use_container_width=True):
+                                    st.rerun()
+                            with col_clear2:
+                                if st.button("📊 查看当前模型统计", use_container_width=True):
+                                    cur_v_min = float(np.min(model.velocity))
+                                    cur_v_max = float(np.max(model.velocity))
+                                    cur_v_mean = float(np.mean(model.velocity))
+                                    st.info(f"当前模型: 速度范围 {cur_v_min:.0f}-{cur_v_max:.0f} m/s, 平均 {cur_v_mean:.0f} m/s")
                     else:
                         st.info("📋 传统编辑模式（安装streamlit-drawable-canvas后可使用画布绘制）")
                         edit_mode = st.radio("编辑模式", ["画笔", "区域填充", "渐变填充"], horizontal=True, key="legacy_edit")
@@ -705,16 +734,17 @@ elif page == "🔊 正演模拟":
         with col_params1:
             st.subheader("数值参数")
             
-            v_min = np.min(model.velocity)
-            v_max = np.max(model.velocity)
-            f_max_default = min(30.0, v_min / (10 * min(model.dx, model.dz)))
-            dt_max_stable = min(model.dx, model.dz) / (v_max * np.sqrt(2))
-            dt_default = min(0.0008, dt_max_stable * 0.8)
+            v_min = float(np.min(model.velocity))
+            v_max = float(np.max(model.velocity))
+            min_grid = float(min(model.dx, model.dz))
+            f_max_default = float(min(25.0, v_min / (20 * min_grid)))
+            dt_max_stable = float(min_grid / (v_max * np.sqrt(2)))
+            dt_default = float(min(0.0008, dt_max_stable * 0.7))
             
             if 'rec_dt' in st.session_state:
-                dt_default = st.session_state.pop('rec_dt')
+                dt_default = float(st.session_state.pop('rec_dt'))
             if 'rec_freq' in st.session_state:
-                f_max_default = st.session_state.pop('rec_freq')
+                f_max_default = float(st.session_state.pop('rec_freq'))
             
             dt = st.number_input("时间步长 (s)", 0.0001, 0.01, dt_default, 0.0001, format="%.4f")
             nt = st.number_input("时间步数", 100, 5000, 1000, 100)
@@ -771,14 +801,22 @@ elif page == "🔊 正演模拟":
                 st.info("💡 参数不满足稳定性条件，建议调整以下参数：")
                 col_rec1, col_rec2 = st.columns(2)
                 with col_rec1:
-                    rec_dt = min(stability.get('max_dt_stable', 0.001) * 0.9, dt)
-                    rec_freq = min(source_freq, np.min(model.velocity) / (10 * min(model.dx, model.dz)) / 2)
+                    v_min_model = float(np.min(model.velocity))
+                    min_grid_model = float(min(model.dx, model.dz))
+                    if not stability['cfl_ok']:
+                        rec_dt = float(stability.get('max_dt_stable', 0.001) * 0.8)
+                    else:
+                        rec_dt = float(dt)
+                    if not stability['dispersion_ok']:
+                        rec_freq = float(min(source_freq, v_min_model / (20 * min_grid_model)))
+                    else:
+                        rec_freq = float(source_freq)
                     st.write(f"**推荐时间步长:** {rec_dt*1000:.2f} ms")
                     st.write(f"**推荐震源主频:** {rec_freq:.1f} Hz")
                 with col_rec2:
                     if st.button("🔧 一键应用推荐参数", type="primary"):
-                        st.session_state.rec_dt = rec_dt
-                        st.session_state.rec_freq = rec_freq
+                        st.session_state.rec_dt = float(rec_dt)
+                        st.session_state.rec_freq = float(rec_freq)
                         st.rerun()
         
         if st.button("开始正演模拟", type="primary", disabled=not (stability['cfl_ok'] and stability['dispersion_ok'])):
@@ -1794,67 +1832,85 @@ elif page == "📡 叠加处理":
                 
                 spectrum_result = result['velocity_spectrum']
                 spectrum = spectrum_result['spectrum']
-                velocities = spectrum_result['velocities']
-                times_spec = spectrum_result['times']
+                velocities = np.asarray(spectrum_result['velocities'], dtype=np.float64)
+                times_spec = np.asarray(spectrum_result['times'], dtype=np.float64)
                 
                 st.info("💡 操作方式：调整下方滑块在速度谱上点选能量极大值位置，点击\"添加拾取点\"按钮将其加入速度函数")
+                
+                if 'velocity_picks' not in st.session_state:
+                    st.session_state.velocity_picks = result['velocity_picks'].copy() if result['velocity_picks'] else []
                 
                 col_pick1, col_pick2 = st.columns([2, 1])
                 
                 with col_pick1:
                     st.markdown("##### 🔍 速度谱拾取")
                     
+                    t_min = float(times_spec[0])
+                    t_max = float(times_spec[-1])
+                    t_default = float(times_spec[len(times_spec) // 2])
+                    
                     pick_time = st.slider(
                         "拾取时间 (s)",
-                        float(times_spec[0]),
-                        float(times_spec[-1]),
-                        float(times_spec[len(times_spec) // 2]),
+                        t_min,
+                        t_max,
+                        t_default,
                         step=float(dt),
                         format="%.3f",
                         key="pick_time_slider"
                     )
+                    pick_time = float(pick_time)
                     
                     time_idx = int(np.argmin(np.abs(times_spec - pick_time)))
+                    pick_time = float(times_spec[time_idx])
                     
                     col_v1, col_v2 = st.columns(2)
                     with col_v1:
                         auto_pick = st.checkbox("自动拾取该时刻最大相干值", value=True, key="auto_pick_check")
+                    
                     with col_v2:
+                        v_min_spec = float(velocities[0])
+                        v_max_spec = float(velocities[-1])
+                        v_default = float(velocities[len(velocities) // 2])
+                        v_step = float(velocities[1] - velocities[0])
+                        
                         if auto_pick:
-                            max_vel_idx = np.argmax(spectrum[time_idx, :])
+                            max_vel_idx = int(np.argmax(spectrum[time_idx, :]))
                             pick_velocity = float(velocities[max_vel_idx])
                             st.info(f"自动拾取速度: **{pick_velocity:.0f} m/s**")
                         else:
                             pick_velocity = st.slider(
                                 "拾取速度 (m/s)",
-                                float(velocities[0]),
-                                float(velocities[-1]),
-                                float(velocities[len(velocities) // 2]),
-                                step=float(velocities[1] - velocities[0]),
+                                v_min_spec,
+                                v_max_spec,
+                                v_default,
+                                step=v_step,
                                 key="pick_vel_slider"
                             )
+                            pick_velocity = float(pick_velocity)
                     
-                    semblance_value = float(spectrum[time_idx, np.argmin(np.abs(velocities - pick_velocity))])
+                    vel_idx = int(np.argmin(np.abs(velocities - pick_velocity)))
+                    pick_velocity = float(velocities[vel_idx])
+                    semblance_value = float(spectrum[time_idx, vel_idx])
                     
                     col_btn1, col_btn2, col_btn3 = st.columns(3)
                     with col_btn1:
                         if st.button("➕ 添加拾取点", type="primary", use_container_width=True):
-                            if 'velocity_picks' not in st.session_state:
-                                st.session_state.velocity_picks = result['velocity_picks'].copy() if result['velocity_picks'] else []
-                            
                             new_pick = {
-                                'time': pick_time,
-                                'velocity': pick_velocity,
-                                'semblance': semblance_value
+                                'time': float(pick_time),
+                                'velocity': float(pick_velocity),
+                                'semblance': float(semblance_value)
                             }
                             st.session_state.velocity_picks.append(new_pick)
-                            st.session_state.velocity_picks = sorted(st.session_state.velocity_picks, key=lambda x: x['time'])
-                            st.success(f"已添加拾取点: t={pick_time:.3f}s, v={pick_velocity:.0f}m/s")
+                            st.session_state.velocity_picks = sorted(
+                                st.session_state.velocity_picks, 
+                                key=lambda x: float(x['time'])
+                            )
+                            st.success(f"已添加拾取点: t={pick_time:.3f}s, v={pick_velocity:.0f}m/s, 相干值={semblance_value:.3f}")
                             st.rerun()
                     
                     with col_btn2:
                         if st.button("🔙 撤销上一个", use_container_width=True):
-                            if 'velocity_picks' in st.session_state and st.session_state.velocity_picks:
+                            if st.session_state.velocity_picks:
                                 removed = st.session_state.velocity_picks.pop()
                                 st.info(f"已移除拾取点: t={removed['time']:.3f}s, v={removed['velocity']:.0f}m/s")
                                 st.rerun()
@@ -1864,9 +1920,6 @@ elif page == "📡 叠加处理":
                             st.session_state.velocity_picks = []
                             st.info("已清空所有拾取点")
                             st.rerun()
-                    
-                    if 'velocity_picks' not in st.session_state:
-                        st.session_state.velocity_picks = result['velocity_picks'].copy() if result['velocity_picks'] else []
                     
                     current_picks = st.session_state.velocity_picks
                     
@@ -1901,28 +1954,37 @@ elif page == "📡 叠加处理":
                 with col_pick2:
                     st.markdown("##### 📋 已拾取点列表")
                     
-                    picks_df = pd.DataFrame(current_picks)
-                    if not picks_df.empty:
-                        picks_df_display = picks_df[['time', 'velocity', 'semblance']].copy()
-                        picks_df_display.columns = ['时间 (s)', '速度 (m/s)', '相干值']
-                        picks_df_display.index = np.arange(1, len(picks_df_display) + 1)
-                        st.dataframe(picks_df_display, use_container_width=True, height=300)
+                    n_picks = len(current_picks)
+                    st.info(f"当前已拾取: **{n_picks}** 个点")
+                    
+                    if n_picks > 0:
+                        picks_data = []
+                        for i, p in enumerate(current_picks):
+                            picks_data.append({
+                                '序号': i + 1,
+                                '时间 (s)': float(p['time']),
+                                '速度 (m/s)': float(p['velocity']),
+                                '相干值': float(p['semblance'])
+                            })
+                        picks_df_display = pd.DataFrame(picks_data)
+                        picks_df_display = picks_df_display.set_index('序号')
+                        st.dataframe(picks_df_display, use_container_width=True, height=250)
                         
                         st.markdown("##### ⚙️ 速度函数插值")
                         interp_method = st.radio("插值方法", ["线性", "样条"], horizontal=True, key="interp_method")
                         
-                        if len(current_picks) >= 2:
-                            if 'velocity_function' not in st.session_state or st.button("🔄 更新速度函数", type="primary", use_container_width=True):
+                        if n_picks >= 2:
+                            if st.button("🔄 更新速度函数", type="primary", use_container_width=True):
                                 from scipy.interpolate import interp1d
                                 
-                                pick_times_arr = np.array([p['time'] for p in current_picks])
-                                pick_vels_arr = np.array([p['velocity'] for p in current_picks])
+                                pick_times_arr = np.array([float(p['time']) for p in current_picks], dtype=np.float64)
+                                pick_vels_arr = np.array([float(p['velocity']) for p in current_picks], dtype=np.float64)
                                 
                                 if interp_method == "线性":
                                     f_interp = interp1d(pick_times_arr, pick_vels_arr, kind='linear',
                                                       bounds_error=False, fill_value='extrapolate')
                                 else:
-                                    if len(current_picks) >= 3:
+                                    if n_picks >= 3:
                                         f_interp = interp1d(pick_times_arr, pick_vels_arr, kind='cubic',
                                                           bounds_error=False, fill_value='extrapolate')
                                     else:
@@ -1931,12 +1993,14 @@ elif page == "📡 叠加处理":
                                 
                                 times_full = np.arange(data['n_samples']) * dt
                                 velocity_function = f_interp(times_full)
-                                velocity_function = np.clip(velocity_function, velocities[0], velocities[-1])
+                                velocity_function = np.clip(velocity_function, 
+                                                           float(velocities[0]), 
+                                                           float(velocities[-1]))
                                 
                                 st.session_state.velocity_function = velocity_function
                                 result['velocity_function'] = velocity_function
                                 result['velocity_picks'] = current_picks
-                                st.success("速度函数已更新！")
+                                st.success("✅ 速度函数已更新！")
                         else:
                             st.info("至少需要2个拾取点才能生成速度函数")
                     else:
