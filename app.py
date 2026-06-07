@@ -1456,12 +1456,28 @@ elif page == "🔄 反演算法":
                 
                 if inv_type == "旅行时反演":
                     observed_times = np.zeros((n_sources, n_receivers))
-                    fmm = FastMarching(initial_model.velocity, initial_model.dx, initial_model.dz)
+                    
+                    true_velocity = initial_model.velocity.copy()
+                    perturbation = np.random.normal(0, 100, true_velocity.shape)
+                    for z in range(true_velocity.shape[0]):
+                        perturbation[z, :] *= np.exp(-z / 10)
+                    true_velocity = true_velocity + perturbation.astype(np.float32)
+                    true_velocity = np.maximum(true_velocity, 1000)
+                    
+                    fmm = FastMarching(true_velocity, initial_model.dx, initial_model.dz)
                     for i, (sx, sz) in enumerate(sources):
                         tau = fmm.solve(sx, sz)
                         for j, (rx, rz) in enumerate(receivers):
                             if 0 <= rx < tau.shape[1] and 0 <= rz < tau.shape[0]:
                                 observed_times[i, j] = tau[rz, rx]
+                    
+                    default_noise = 2.0
+                    add_noise = st.checkbox("添加随机噪声到观测数据", value=True, key="ms_noise")
+                    if add_noise:
+                        noise_level = st.slider("噪声水平 (%)", 0, 20, int(default_noise), key="ms_noise_level")
+                        observed_times *= (1 + np.random.normal(0, noise_level / 100, observed_times.shape))
+                    else:
+                        observed_times *= (1 + np.random.normal(0, default_noise / 100, observed_times.shape))
                     
                     st.success(f"已生成多震源旅行时数据: {n_sources} 震源 x {n_receivers} 接收点")
                     
@@ -1473,11 +1489,6 @@ elif page == "🔄 反演算法":
                         'dz': initial_model.dz,
                         'multisource_params': multisource_params
                     }
-                    
-                    if st.checkbox("添加随机噪声到观测数据", key="ms_noise"):
-                        noise_level = st.slider("噪声水平 (%)", 0, 20, 5, key="ms_noise_level")
-                        observed_data['observed_times'] *= (1 + np.random.normal(0, noise_level / 100,
-                                                                               observed_data['observed_times'].shape))
                 else:
                     st.info("💡 波形多震源反演：每个震源需要独立的正演参数")
                     forward_params_list = []

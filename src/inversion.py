@@ -50,31 +50,66 @@ def lsqr_solve(A: np.ndarray, b: np.ndarray, lambda_reg: float = 0.01,
     """
     m, n = A.shape
     
-    A_reg = np.vstack([A, lambda_reg * np.eye(n)])
+    col_scales = np.sqrt(np.sum(A**2, axis=0))
+    col_scales = np.maximum(col_scales, 1e-10)
+    A_scaled = A / col_scales
+    
+    A_reg = np.vstack([A_scaled, lambda_reg * np.eye(n)])
     b_reg = np.hstack([b, np.zeros(n)])
     
-    x = np.zeros(n)
+    x_scaled = np.zeros(n)
     
-    r = b_reg - A_reg @ x
+    r = b_reg - A_reg @ x_scaled
     p = A_reg.T @ r
     r_norm = np.dot(r, r)
     p_norm = np.dot(p, p)
     
+    if not np.isfinite(r_norm) or not np.isfinite(p_norm):
+        return np.zeros(n)
+    
     for i in range(max_iter):
         Ap = A_reg @ p
-        alpha = p_norm / np.dot(Ap, Ap)
-        x = x + alpha * p
+        Ap_norm_sq = np.dot(Ap, Ap)
+        
+        if not np.isfinite(Ap_norm_sq) or Ap_norm_sq < 1e-20:
+            break
+        
+        alpha = p_norm / Ap_norm_sq
+        
+        if not np.isfinite(alpha):
+            break
+        
+        x_scaled = x_scaled + alpha * p
         r = r - alpha * Ap
         
         r_new_norm = np.dot(r, r)
-        beta = r_new_norm / r_norm
+        
+        if not np.isfinite(r_new_norm):
+            break
+        
+        beta = r_new_norm / r_norm if r_norm > 1e-20 else 0.0
+        
+        if not np.isfinite(beta):
+            beta = 0.0
+        
         p = A_reg.T @ r + beta * p
         
         r_norm = r_new_norm
         p_norm = np.dot(p, p)
         
+        if not np.isfinite(p_norm):
+            break
+        
         if np.sqrt(r_norm) < tol:
             break
+    
+    if not np.all(np.isfinite(x_scaled)):
+        return np.zeros(n)
+    
+    x = x_scaled / col_scales
+    
+    if not np.all(np.isfinite(x)):
+        return np.zeros(n)
     
     return x
 
@@ -199,7 +234,10 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
         objective = 0.5 * total_residual
         objective_history.append(objective)
         
-        relative_change = abs(prev_objective - objective) / (abs(prev_objective) + 1e-10)
+        if iteration == 0:
+            relative_change = 1.0
+        else:
+            relative_change = abs(prev_objective - objective) / (abs(prev_objective) + 1e-10)
         prev_objective = objective
         
         if params.verbose:
@@ -218,11 +256,24 @@ def invert_traveltime(initial_velocity: np.ndarray, dx: float, dz: float,
         
         delta_v = delta_v.reshape((nz, nx))
         
+        if not np.all(np.isfinite(delta_v)):
+            delta_v = np.zeros_like(delta_v)
+        
         update_norm = np.linalg.norm(delta_v)
+        
+        if update_norm > 1e-6:
+            max_step = 500.0
+            current_max = np.max(np.abs(delta_v))
+            if current_max > max_step:
+                step_scale = max_step / current_max
+                delta_v = delta_v * step_scale
+                update_norm = update_norm * step_scale
+        
         model_update_history.append(update_norm)
         
         current_velocity = current_velocity + delta_v
         current_velocity = np.maximum(current_velocity, 1000)
+        current_velocity = np.nan_to_num(current_velocity, nan=1500.0, posinf=6000.0, neginf=1000.0)
     
     return InversionResult(
         initial_model=initial_velocity,
@@ -657,9 +708,24 @@ def invert_traveltime_multisource(initial_velocity: np.ndarray, dx: float, dz: f
     source_objectives = [[] for _ in range(n_sources)]
     ray_coverage = []
     
-    traces_list = [np.zeros((100, n_receivers)) for _ in range(n_sources)]
-    weights = compute_source_weights(traces_list, multisource_params.weight_mode, 
-                                     multisource_params.custom_weights)
+    if multisource_params.weight_mode == 'snr_adaptive':
+        snrs = np.zeros(n_sources)
+        for i in range(n_sources):
+            obs = observed_times[i, :]
+            valid_obs = obs[np.isfinite(obs)]
+            if len(valid_obs) > 1:
+                signal_power = np.mean(valid_obs**2)
+                noise_est = np.std(valid_obs)
+                noise_power = max(noise_est**2, 1e-20)
+                snrs[i] = 10 * np.log10(signal_power / noise_power)
+            else:
+                snrs[i] = 0.0
+        weights = 10 ** (snrs / 20)
+        weights = weights / np.sum(weights)
+    else:
+        traces_list = [np.zeros((100, n_receivers)) for _ in range(n_sources)]
+        weights = compute_source_weights(traces_list, multisource_params.weight_mode, 
+                                         multisource_params.custom_weights)
     
     converged = False
     prev_objective = np.inf
@@ -719,7 +785,10 @@ def invert_traveltime_multisource(initial_velocity: np.ndarray, dx: float, dz: f
         
         objective_history.append(total_objective)
         
-        relative_change = abs(prev_objective - total_objective) / (abs(prev_objective) + 1e-10)
+        if iteration == 0:
+            relative_change = 1.0
+        else:
+            relative_change = abs(prev_objective - total_objective) / (abs(prev_objective) + 1e-10)
         prev_objective = total_objective
         
         if params.verbose:
@@ -739,11 +808,24 @@ def invert_traveltime_multisource(initial_velocity: np.ndarray, dx: float, dz: f
         
         delta_v = delta_v.reshape((nz, nx))
         
+        if not np.all(np.isfinite(delta_v)):
+            delta_v = np.zeros_like(delta_v)
+        
         update_norm = np.linalg.norm(delta_v)
+        
+        if update_norm > 1e-6:
+            max_step = 500.0
+            current_max = np.max(np.abs(delta_v))
+            if current_max > max_step:
+                step_scale = max_step / current_max
+                delta_v = delta_v * step_scale
+                update_norm = update_norm * step_scale
+        
         model_update_history.append(update_norm)
         
         current_velocity = current_velocity + delta_v
         current_velocity = np.maximum(current_velocity, 1000)
+        current_velocity = np.nan_to_num(current_velocity, nan=1500.0, posinf=6000.0, neginf=1000.0)
     
     return MultiSourceInversionResult(
         initial_model=initial_velocity,
