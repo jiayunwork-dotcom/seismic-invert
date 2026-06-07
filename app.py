@@ -27,7 +27,14 @@ from src.travel_time import (
     FastMarching, trace_ray_layered, trace_ray_grid,
     compute_travel_times, RayPath
 )
-from src.inversion import InversionParams, InversionResult, run_inversion
+from src.inversion import (
+    InversionParams, InversionResult, run_inversion,
+    MultiSourceParams, MultiSourceInversionResult,
+    invert_traveltime_multisource, invert_waveform_multisource,
+    UncertaintyAnalysisResult, run_uncertainty_analysis,
+    PresetInversionParams, PRESET_SCHEMES, apply_preset_params
+)
+from src.velocity_model import GridModel
 from src.frequency_domain import (
     FilterParams, DeconvolutionParams,
     compute_spectrum, compute_average_spectrum,
@@ -42,7 +49,9 @@ from src.visualization import (
     plot_velocity, plot_seismic_wiggle, plot_seismic_image,
     plot_spectrum, plot_travel_time_contours, plot_wavefield_snapshot,
     plot_inversion_result, plot_velocity_spectrum, plot_comparison,
-    figure_to_bytes
+    figure_to_bytes, plot_ray_coverage, plot_multisource_ray_coverage,
+    plot_uncertainty_analysis, plot_resolution_diagonal,
+    plot_multisource_inversion_result, plot_preset_comparison
 )
 
 st.set_page_config(
@@ -67,11 +76,20 @@ if 'travel_time_result' not in st.session_state:
 if 'inversion_result' not in st.session_state:
     st.session_state.inversion_result = None
 
+if 'multisource_inversion_result' not in st.session_state:
+    st.session_state.multisource_inversion_result = None
+
+if 'uncertainty_result' not in st.session_state:
+    st.session_state.uncertainty_result = None
+
 if 'process_result' not in st.session_state:
     st.session_state.process_result = None
 
 if 'stacking_result' not in st.session_state:
     st.session_state.stacking_result = None
+
+if 'selected_preset' not in st.session_state:
+    st.session_state.selected_preset = None
 
 st.title("🌍 地震波形反演与地层结构成像工具")
 st.markdown("---")
@@ -1308,93 +1326,294 @@ elif page == "🔄 反演算法":
     else:
         initial_model = st.session_state.velocity_model
         
+        st.subheader("📋 参数预设方案")
+        col_preset1, col_preset2, col_preset3 = st.columns(3)
+        
+        with col_preset1:
+            if st.button("⚡ 快速预览", use_container_width=True, type="secondary"):
+                preset, inv_params = apply_preset_params('quick')
+                st.session_state.selected_preset = preset
+                st.success(f"已加载【{preset.name}】方案: {preset.description}")
+                st.rerun()
+        
+        with col_preset2:
+            if st.button("🎯 标准精度", use_container_width=True, type="primary"):
+                preset, inv_params = apply_preset_params('standard')
+                st.session_state.selected_preset = preset
+                st.success(f"已加载【{preset.name}】方案: {preset.description}")
+                st.rerun()
+        
+        with col_preset3:
+            if st.button("🔬 高精度", use_container_width=True, type="secondary"):
+                preset, inv_params = apply_preset_params('high_accuracy')
+                st.session_state.selected_preset = preset
+                st.success(f"已加载【{preset.name}】方案: {preset.description}")
+                st.rerun()
+        
+        if st.session_state.selected_preset is not None:
+            preset = st.session_state.selected_preset
+            st.info(f"💡 当前预设: **{preset.name}** - 预计时间: {preset.estimated_time}")
+            if st.button("🗑️ 清除预设，使用自定义参数"):
+                st.session_state.selected_preset = None
+                st.rerun()
+        
+        with st.expander("📊 预设方案对比"):
+            fig_preset = plot_preset_comparison(PRESET_SCHEMES)
+            buf_preset = figure_to_bytes(fig_preset)
+            st.image(buf_preset, use_column_width=True)
+        
+        st.markdown("---")
+        
         inv_type = st.radio("反演类型", ["旅行时反演", "波形反演"], horizontal=True)
+        inv_mode = st.radio("反演模式", ["单震源反演", "多震源联合反演"], horizontal=True)
         
         col_inv1, col_inv2 = st.columns(2)
         
         with col_inv1:
             st.subheader("反演参数")
             
-            max_iter = st.number_input("最大迭代次数", 5, 200, 50, 5)
-            conv_thresh = st.number_input("收敛阈值 (相对变化)", 1e-6, 1e-2, 1e-4, format="%.1e")
-            regularization = st.number_input("正则化参数", 0.0, 1.0, 0.01, 0.001)
-            
-            if inv_type == "波形反演":
-                st.subheader("多尺度策略")
-                freq_scales_input = st.text_input("频率序列 (Hz, 逗号分隔)", "5, 10, 20, 30")
-                freq_scales = [float(x.strip()) for x in freq_scales_input.split(',')]
+            if st.session_state.selected_preset is not None:
+                preset = st.session_state.selected_preset
+                max_iter = st.number_input("最大迭代次数", 5, 200, preset.max_iterations, 5)
+                conv_thresh = st.number_input("收敛阈值 (相对变化)", 1e-6, 1e-2, preset.convergence_threshold, format="%.1e")
+                regularization = st.number_input("正则化参数", 0.0, 1.0, preset.regularization, 0.001)
+                if inv_type == "波形反演":
+                    freq_scales_input = st.text_input("频率序列 (Hz, 逗号分隔)", ", ".join([str(f) for f in preset.frequency_scales]))
+                    freq_scales = [float(x.strip()) for x in freq_scales_input.split(',')]
+                else:
+                    freq_scales = preset.frequency_scales
             else:
-                freq_scales = [5, 10, 20, 30]
+                max_iter = st.number_input("最大迭代次数", 5, 200, 50, 5)
+                conv_thresh = st.number_input("收敛阈值 (相对变化)", 1e-6, 1e-2, 1e-4, format="%.1e")
+                regularization = st.number_input("正则化参数", 0.0, 1.0, 0.01, 0.001)
+                if inv_type == "波形反演":
+                    st.subheader("多尺度策略")
+                    freq_scales_input = st.text_input("频率序列 (Hz, 逗号分隔)", "5, 10, 20, 30")
+                    freq_scales = [float(x.strip()) for x in freq_scales_input.split(',')]
+                else:
+                    freq_scales = [5, 10, 20, 30]
         
         with col_inv2:
             st.subheader("观测数据")
             
-            if inv_type == "旅行时反演":
-                if st.session_state.travel_time_result is not None:
-                    tt_result = st.session_state.travel_time_result
-                    
-                    if 'travel_time_fields' in tt_result and tt_result['travel_time_fields']:
-                        sources = tt_result.get('source_locations', tt_result.get('sources', []))
-                        receivers = tt_result.get('receiver_locations', tt_result.get('receivers', []))
-                        
-                        n_sources = len(sources)
-                        n_receivers = len(receivers)
-                        
-                        observed_times = np.zeros((n_sources, n_receivers))
-                        
-                        for i, tt_field in enumerate(tt_result['travel_time_fields']):
-                            for j, (rx, rz) in enumerate(receivers):
-                                if 0 <= rx < tt_field.shape[1] and 0 <= rz < tt_field.shape[0]:
-                                    observed_times[i, j] = tt_field[rz, rx]
-                        
-                        st.success(f"已加载旅行时数据: {n_sources} 震源 x {n_receivers} 接收点")
-                        
-                        observed_data = {
-                            'sources': sources,
-                            'receivers': receivers,
-                            'observed_times': observed_times,
-                            'dx': initial_model.dx,
-                            'dz': initial_model.dz
-                        }
-                    else:
-                        st.warning("请先在【旅行时计算】页面计算FMM旅行时")
-                        observed_data = None
-                else:
-                    st.warning("请先在【旅行时计算】页面计算旅行时")
-                    observed_data = None
+            if inv_mode == "多震源联合反演":
+                st.info("💡 多震源模式：最多支持8个震源，每个震源独立正演")
                 
-                if st.checkbox("添加随机噪声到观测数据"):
-                    noise_level = st.slider("噪声水平 (%)", 0, 20, 5)
-                    if observed_data is not None:
+                n_sources = st.number_input("震源数量", 1, 8, 2, 1)
+                
+                sources = []
+                st.markdown("##### 震源位置配置")
+                for i in range(n_sources):
+                    col_sx, col_sz = st.columns(2)
+                    with col_sx:
+                        sx = st.number_input(f"震源{i+1} X位置 (网格)", 0, initial_model.nx - 1, 
+                                            initial_model.nx // 4 + i * (initial_model.nx // (n_sources + 1)), 
+                                            key=f"ms_sx{i}")
+                    with col_sz:
+                        sz = st.number_input(f"震源{i+1} Z位置 (网格)", 0, initial_model.nz - 1, 2, key=f"ms_sz{i}")
+                    sources.append((int(sx), int(sz)))
+                
+                st.markdown("##### 权重模式")
+                weight_mode = st.selectbox(
+                    "权重分配方式",
+                    ["uniform", "snr_adaptive"],
+                    format_func=lambda x: {
+                        'uniform': '均匀分配 (所有震源权重相同)',
+                        'snr_adaptive': '按信噪比自适应 (高SNR震源权重更大)'
+                    }[x]
+                )
+                
+                multisource_params = MultiSourceParams(
+                    sources=sources,
+                    weight_mode=weight_mode,
+                    max_sources=8
+                )
+                
+                receiver_type = st.radio("接收点排列", ["等间距排列", "自定义位置"], horizontal=True, key="ms_rec")
+                n_receivers = st.number_input("接收点数量", 1, initial_model.nx, min(20, initial_model.nx), 1, key="ms_nrec")
+                
+                receivers = []
+                if receiver_type == "等间距排列":
+                    col_r1, col_r2, col_r3 = st.columns(3)
+                    with col_r1:
+                        rx_start = st.number_input("起始X", 0, initial_model.nx - 1, 10, key="ms_rxstart")
+                    with col_r2:
+                        rx_end = st.number_input("结束X", 0, initial_model.nx - 1, initial_model.nx - 10, key="ms_rxend")
+                    with col_r3:
+                        rz = st.number_input("接收深度", 0, initial_model.nz - 1, 2, key="ms_rz")
+                    
+                    rx_positions = np.linspace(rx_start, rx_end, n_receivers, dtype=int)
+                    for rx in rx_positions:
+                        receivers.append((int(rx), int(rz)))
+                else:
+                    for i in range(n_receivers):
+                        col_rx, col_rz = st.columns(2)
+                        with col_rx:
+                            rx = st.number_input(f"接收点{i+1} X位置", 0, initial_model.nx - 1, 10 + i * 5, key=f"ms_rx{i}")
+                        with col_rz:
+                            rz = st.number_input(f"接收点{i+1} Z位置", 0, initial_model.nz - 1, 2, key=f"ms_rz{i}")
+                        receivers.append((int(rx), int(rz)))
+                
+                if inv_type == "旅行时反演":
+                    observed_times = np.zeros((n_sources, n_receivers))
+                    fmm = FastMarching(initial_model.velocity, initial_model.dx, initial_model.dz)
+                    for i, (sx, sz) in enumerate(sources):
+                        tau = fmm.solve(sx, sz)
+                        for j, (rx, rz) in enumerate(receivers):
+                            if 0 <= rx < tau.shape[1] and 0 <= rz < tau.shape[0]:
+                                observed_times[i, j] = tau[rz, rx]
+                    
+                    st.success(f"已生成多震源旅行时数据: {n_sources} 震源 x {n_receivers} 接收点")
+                    
+                    observed_data = {
+                        'sources': sources,
+                        'receivers': receivers,
+                        'observed_times': observed_times,
+                        'dx': initial_model.dx,
+                        'dz': initial_model.dz,
+                        'multisource_params': multisource_params
+                    }
+                    
+                    if st.checkbox("添加随机噪声到观测数据", key="ms_noise"):
+                        noise_level = st.slider("噪声水平 (%)", 0, 20, 5, key="ms_noise_level")
                         observed_data['observed_times'] *= (1 + np.random.normal(0, noise_level / 100,
                                                                                observed_data['observed_times'].shape))
+                else:
+                    st.info("💡 波形多震源反演：每个震源需要独立的正演参数")
+                    forward_params_list = []
+                    observed_traces_list = []
+                    
+                    for i in range(n_sources):
+                        st.markdown(f"###### 震源{i+1} 正演参数")
+                        col_fp1, col_fp2 = st.columns(2)
+                        with col_fp1:
+                            dt = st.number_input(f"时间步长 (s) - 震源{i+1}", 0.0001, 0.01, 0.0008, 0.0001, 
+                                                format="%.4f", key=f"ms_dt{i}")
+                            nt = st.number_input(f"时间步数 - 震源{i+1}", 100, 5000, 1000, 100, key=f"ms_nt{i}")
+                            source_freq = st.number_input(f"震源主频 (Hz) - 震源{i+1}", 5.0, 100.0, 25.0, 5.0, key=f"ms_freq{i}")
+                        with col_fp2:
+                            source_type = st.selectbox(f"子波类型 - 震源{i+1}", ["ricker", "gauss"], key=f"ms_stype{i}")
+                            boundary_type = st.selectbox(f"边界条件 - 震源{i+1}", ["pml", "mur"], key=f"ms_btype{i}")
+                            pml_width = 20 if boundary_type == "pml" else 0
+                        
+                        sx, sz = sources[i]
+                        fp = ForwardParams(
+                            dt=dt, nt=nt, dx=initial_model.dx, dz=initial_model.dz,
+                            source_frequency=source_freq, source_type=source_type,
+                            boundary_type=boundary_type, pml_width=pml_width,
+                            source_x=sx, source_z=sz,
+                            receiver_z=receivers[0][1],
+                            receiver_x_start=receivers[0][0],
+                            receiver_x_end=receivers[-1][0],
+                            receiver_spacing=max(1, (receivers[-1][0] - receivers[0][0]) // max(1, len(receivers) - 1))
+                        )
+                        forward_params_list.append(fp)
+                        
+                        with st.spinner(f"正在生成震源{i+1}合成数据..."):
+                            fw_result = run_forward(initial_model.velocity, fp)
+                            observed_traces_list.append(fw_result['seismograms'])
+                    
+                    st.success(f"已生成多震源波形数据: {n_sources} 震源")
+                    
+                    observed_data = {
+                        'traces_list': observed_traces_list,
+                        'forward_params_list': forward_params_list,
+                        'multisource_params': multisource_params
+                    }
+                    
+                    if st.checkbox("添加随机噪声到观测数据", key="ms_noise_wave"):
+                        noise_level = st.slider("噪声水平 (%)", 0, 50, 5, key="ms_noise_level_wave")
+                        for i in range(len(observed_data['traces_list'])):
+                            traces = observed_data['traces_list'][i]
+                            max_amp = np.max(np.abs(traces))
+                            noise = np.random.normal(0, max_amp * noise_level / 100, traces.shape)
+                            observed_data['traces_list'][i] = traces + noise
             
             else:
-                if st.session_state.forward_result is not None:
-                    observed_traces = st.session_state.forward_result['seismograms']
-                    st.success(f"已加载波形数据: {observed_traces.shape[0]} 采样点 x {observed_traces.shape[1]} 道")
-                    
-                    observed_data = {'traces': observed_traces}
+                if inv_type == "旅行时反演":
+                    if st.session_state.travel_time_result is not None:
+                        tt_result = st.session_state.travel_time_result
+                        
+                        if 'travel_time_fields' in tt_result and tt_result['travel_time_fields']:
+                            sources = tt_result.get('source_locations', tt_result.get('sources', []))
+                            receivers = tt_result.get('receiver_locations', tt_result.get('receivers', []))
+                            
+                            n_sources = len(sources)
+                            n_receivers = len(receivers)
+                            
+                            observed_times = np.zeros((n_sources, n_receivers))
+                            
+                            for i, tt_field in enumerate(tt_result['travel_time_fields']):
+                                for j, (rx, rz) in enumerate(receivers):
+                                    if 0 <= rx < tt_field.shape[1] and 0 <= rz < tt_field.shape[0]:
+                                        observed_times[i, j] = tt_field[rz, rx]
+                            
+                            st.success(f"已加载旅行时数据: {n_sources} 震源 x {n_receivers} 接收点")
+                            
+                            observed_data = {
+                                'sources': sources,
+                                'receivers': receivers,
+                                'observed_times': observed_times,
+                                'dx': initial_model.dx,
+                                'dz': initial_model.dz
+                            }
+                        else:
+                            st.warning("请先在【旅行时计算】页面计算FMM旅行时")
+                            observed_data = None
+                    else:
+                        st.warning("请先在【旅行时计算】页面计算旅行时")
+                        observed_data = None
                     
                     if st.checkbox("添加随机噪声到观测数据"):
-                        noise_level = st.slider("噪声水平 (%)", 0, 50, 5)
-                        max_amp = np.max(np.abs(observed_traces))
-                        noise = np.random.normal(0, max_amp * noise_level / 100, observed_traces.shape)
-                        observed_data['traces'] = observed_traces + noise
+                        noise_level = st.slider("噪声水平 (%)", 0, 20, 5)
+                        if observed_data is not None:
+                            observed_data['observed_times'] *= (1 + np.random.normal(0, noise_level / 100,
+                                                                                   observed_data['observed_times'].shape))
+                
                 else:
-                    if st.session_state.seismic_data is not None:
-                        observed_traces = st.session_state.seismic_data['traces'].T
-                        st.success(f"已加载导入数据: {observed_traces.shape[0]} 采样点 x {observed_traces.shape[1]} 道")
+                    if st.session_state.forward_result is not None:
+                        observed_traces = st.session_state.forward_result['seismograms']
+                        st.success(f"已加载波形数据: {observed_traces.shape[0]} 采样点 x {observed_traces.shape[1]} 道")
+                        
                         observed_data = {'traces': observed_traces}
+                        
+                        if st.checkbox("添加随机噪声到观测数据"):
+                            noise_level = st.slider("噪声水平 (%)", 0, 50, 5)
+                            max_amp = np.max(np.abs(observed_traces))
+                            noise = np.random.normal(0, max_amp * noise_level / 100, observed_traces.shape)
+                            observed_data['traces'] = observed_traces + noise
                     else:
-                        st.warning("请先进行正演模拟获取合成数据，或导入观测数据")
-                        observed_data = None
+                        if st.session_state.seismic_data is not None:
+                            observed_traces = st.session_state.seismic_data['traces'].T
+                            st.success(f"已加载导入数据: {observed_traces.shape[0]} 采样点 x {observed_traces.shape[1]} 道")
+                            observed_data = {'traces': observed_traces}
+                        else:
+                            st.warning("请先进行正演模拟获取合成数据，或导入观测数据")
+                            observed_data = None
         
         col_cmap, _ = st.columns(2)
         with col_cmap:
             result_cmap = st.selectbox("结果色标", ["viridis", "jet", "seismic"], 0)
         
-        if st.button("开始反演", type="primary"):
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        
+        with col_btn1:
+            run_inversion_btn = st.button("开始反演", type="primary", use_container_width=True)
+        
+        with col_btn2:
+            run_uncertainty_btn = st.button("🔍 不确定性分析", type="secondary", use_container_width=True,
+                                           disabled=st.session_state.inversion_result is None and 
+                                                    st.session_state.multisource_inversion_result is None)
+        
+        with col_btn3:
+            clear_results_btn = st.button("🗑️ 清除结果", type="secondary", use_container_width=True)
+            if clear_results_btn:
+                st.session_state.inversion_result = None
+                st.session_state.multisource_inversion_result = None
+                st.session_state.uncertainty_result = None
+                st.rerun()
+        
+        if run_inversion_btn and observed_data is not None:
             inv_params = InversionParams(
                 max_iterations=max_iter,
                 convergence_threshold=conv_thresh,
@@ -1403,10 +1622,6 @@ elif page == "🔄 反演算法":
                 frequency_scales=freq_scales,
                 verbose=True
             )
-            
-            forward_params = None
-            if inv_type == "波形反演" and st.session_state.forward_result is not None:
-                forward_params = st.session_state.forward_result['params']
             
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -1420,13 +1635,41 @@ elif page == "🔄 反演算法":
             
             try:
                 with st.spinner("正在进行反演计算..."):
-                    result = run_inversion(
-                        initial_model.velocity,
-                        inv_params,
-                        forward_params=forward_params,
-                        observed_data=observed_data
-                    )
-                    st.session_state.inversion_result = result
+                    if inv_mode == "多震源联合反演":
+                        ms_params = observed_data['multisource_params']
+                        if inv_type == "旅行时反演":
+                            result = invert_traveltime_multisource(
+                                initial_model.velocity,
+                                initial_model.dx, initial_model.dz,
+                                observed_data['sources'],
+                                observed_data['receivers'],
+                                observed_data['observed_times'],
+                                inv_params,
+                                ms_params
+                            )
+                        else:
+                            result = invert_waveform_multisource(
+                                initial_model.velocity,
+                                observed_data['traces_list'],
+                                observed_data['forward_params_list'],
+                                inv_params,
+                                ms_params
+                            )
+                        st.session_state.multisource_inversion_result = result
+                        st.session_state.inversion_result = None
+                    else:
+                        forward_params = None
+                        if inv_type == "波形反演" and st.session_state.forward_result is not None:
+                            forward_params = st.session_state.forward_result['params']
+                        
+                        result = run_inversion(
+                            initial_model.velocity,
+                            inv_params,
+                            forward_params=forward_params,
+                            observed_data=observed_data
+                        )
+                        st.session_state.inversion_result = result
+                        st.session_state.multisource_inversion_result = None
                 
                 st.success("反演完成！")
                 progress_bar.progress(1.0)
@@ -1434,8 +1677,137 @@ elif page == "🔄 反演算法":
                 
             except Exception as e:
                 st.error(f"反演错误: {str(e)}")
+                import traceback
+                st.error(traceback.format_exc())
         
-        if st.session_state.inversion_result is not None:
+        if run_uncertainty_btn:
+            if st.session_state.inversion_result is not None or st.session_state.multisource_inversion_result is not None:
+                base_params = InversionParams(
+                    max_iterations=max_iter,
+                    convergence_threshold=conv_thresh,
+                    regularization=regularization,
+                    inversion_type='traveltime' if inv_type == "旅行时反演" else 'waveform',
+                    frequency_scales=freq_scales,
+                    verbose=False
+                )
+                
+                st.info("💡 Bootstrap不确定性分析：对观测数据加不同水平的随机噪声，每档重复反演10次")
+                
+                col_unc1, col_unc2 = st.columns(2)
+                with col_unc1:
+                    snr_min = st.slider("最小SNR (dB)", 10, 30, 10, 5)
+                    snr_max = st.slider("最大SNR (dB)", 20, 50, 40, 5)
+                with col_unc2:
+                    n_snr_levels = st.slider("SNR档数", 3, 7, 5, 1)
+                    n_repeats = st.slider("每档重复次数", 5, 20, 10, 1)
+                
+                snr_levels = np.linspace(snr_min, snr_max, n_snr_levels).tolist()
+                
+                if st.button("🚀 开始不确定性分析", type="primary"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    def progress_callback(progress, status):
+                        progress_bar.progress(progress)
+                        status_text.text(status)
+                    
+                    try:
+                        with st.spinner("正在进行Bootstrap不确定性分析...这可能需要一些时间"):
+                            if inv_mode == "多震源联合反演" and st.session_state.multisource_inversion_result is not None:
+                                base_velocity = st.session_state.multisource_inversion_result.inverted_model
+                            else:
+                                base_velocity = st.session_state.inversion_result.inverted_model
+                            
+                            uncertainty_result = run_uncertainty_analysis(
+                                base_velocity,
+                                base_params,
+                                observed_data,
+                                initial_model.dx,
+                                initial_model.dz,
+                                snr_levels=snr_levels,
+                                n_repeats=n_repeats,
+                                progress_callback=progress_callback
+                            )
+                            
+                            st.session_state.uncertainty_result = uncertainty_result
+                        
+                        st.success("不确定性分析完成！")
+                        progress_bar.progress(1.0)
+                        status_text.text("分析完成！")
+                        
+                    except Exception as e:
+                        st.error(f"不确定性分析错误: {str(e)}")
+                        import traceback
+                        st.error(traceback.format_exc())
+        
+        if st.session_state.multisource_inversion_result is not None:
+            result = st.session_state.multisource_inversion_result
+            
+            st.markdown("---")
+            st.subheader("🎯 多震源联合反演结果")
+            
+            col_res1, col_res2, col_res3 = st.columns(3)
+            with col_res1:
+                st.metric("迭代次数", result.iterations)
+            with col_res2:
+                st.metric("最终目标函数", f"{result.final_objective:.4e}")
+            with col_res3:
+                st.metric("是否收敛", "✅ 是" if result.converged else "❌ 否")
+            
+            st.markdown("##### 震源权重")
+            weights_df = pd.DataFrame({
+                '震源': [f'震源 {i+1}' for i in range(len(result.source_weights))],
+                '位置': [f'({x}, {z})' for x, z in result.source_locations],
+                '权重': result.source_weights
+            })
+            st.dataframe(weights_df, hide_index=True, use_container_width=True)
+            
+            with st.spinner("正在绘制多震源反演结果..."):
+                fig = plot_multisource_inversion_result(
+                    result.initial_model,
+                    result.inverted_model,
+                    result.ray_coverage_density,
+                    initial_model.dx,
+                    initial_model.dz,
+                    result.source_weights,
+                    result.objective_history,
+                    result.source_objectives,
+                    result.source_locations,
+                    cmap=result_cmap
+                )
+                buf = figure_to_bytes(fig)
+                st.image(buf, use_column_width=True)
+            
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button("下载PNG", buf, file_name="multisource_inversion_result.png", mime="image/png")
+            with col_dl2:
+                pdf_buf = figure_to_bytes(fig, format='pdf')
+                st.download_button("下载PDF", pdf_buf, file_name="multisource_inversion_result.pdf", mime="application/pdf")
+            
+            st.markdown("##### 单独射线覆盖密度图")
+            with st.spinner("正在绘制射线覆盖图..."):
+                fig_ray = plot_multisource_ray_coverage(
+                    result.ray_coverage_density,
+                    initial_model.dx,
+                    initial_model.dz,
+                    velocity=result.inverted_model,
+                    source_locations=result.source_locations,
+                    ncols=min(4, len(result.ray_coverage_density))
+                )
+                buf_ray = figure_to_bytes(fig_ray)
+                st.image(buf_ray, use_column_width=True)
+            
+            if st.button("应用反演结果到速度模型", key="ms_apply"):
+                new_model = GridModel(
+                    initial_model.nx, initial_model.nz,
+                    initial_model.dx, initial_model.dz
+                )
+                new_model.velocity = result.inverted_model.astype(np.float32)
+                st.session_state.velocity_model = new_model
+                st.success("已应用反演结果！")
+        
+        elif st.session_state.inversion_result is not None:
             result = st.session_state.inversion_result
             
             st.markdown("---")
@@ -1477,6 +1849,76 @@ elif page == "🔄 反演算法":
                 new_model.velocity = result.inverted_model.astype(np.float32)
                 st.session_state.velocity_model = new_model
                 st.success("已应用反演结果！")
+        
+        if st.session_state.uncertainty_result is not None:
+            uncertainty_result = st.session_state.uncertainty_result
+            
+            st.markdown("---")
+            st.subheader("📊 不确定性分析结果")
+            
+            col_unc1, col_unc2 = st.columns(2)
+            with col_unc1:
+                st.metric("SNR范围 (dB)", f"{min(uncertainty_result.snr_levels):.0f} - {max(uncertainty_result.snr_levels):.0f}")
+            with col_unc2:
+                st.metric("总反演次数", len(uncertainty_result.all_inverted_models))
+            
+            tab_unc1, tab_unc2 = st.tabs(["均值+标准差模型", "分辨率矩阵对角线"])
+            
+            with tab_unc1:
+                st.info("💡 均值模型显示反演的平均结果，标准差热力图标注反演约束不足的区域（红色表示不确定性高）")
+                with st.spinner("正在绘制不确定性分析图..."):
+                    fig_unc = plot_uncertainty_analysis(
+                        uncertainty_result.mean_model,
+                        uncertainty_result.std_model,
+                        initial_model.dx,
+                        initial_model.dz,
+                        cmap_mean=result_cmap,
+                        cmap_std='hot'
+                    )
+                    buf_unc = figure_to_bytes(fig_unc)
+                    st.image(buf_unc, use_column_width=True)
+                
+                col_dl1, col_dl2 = st.columns(2)
+                with col_dl1:
+                    st.download_button("下载不确定性分析图PNG", buf_unc, 
+                                      file_name="uncertainty_analysis.png", mime="image/png")
+                with col_dl2:
+                    pdf_buf_unc = figure_to_bytes(fig_unc, format='pdf')
+                    st.download_button("下载不确定性分析图PDF", pdf_buf_unc, 
+                                      file_name="uncertainty_analysis.pdf", mime="application/pdf")
+                
+                st.markdown("##### 不确定性统计")
+                unc_stats = {
+                    '统计量': ['最小标准差', '最大标准差', '平均标准差', '标准差中位数'],
+                    '值 (m/s)': [
+                        f"{np.min(uncertainty_result.std_model):.2f}",
+                        f"{np.max(uncertainty_result.std_model):.2f}",
+                        f"{np.mean(uncertainty_result.std_model):.2f}",
+                        f"{np.median(uncertainty_result.std_model):.2f}"
+                    ]
+                }
+                st.dataframe(pd.DataFrame(unc_stats), hide_index=True, use_container_width=True)
+            
+            with tab_unc2:
+                st.info("💡 分辨率矩阵对角线显示哪些深度/位置的速度被数据约束得好（值越接近1表示约束越好）")
+                with st.spinner("正在绘制分辨率对角线图..."):
+                    fig_res = plot_resolution_diagonal(
+                        uncertainty_result.resolution_diagonal,
+                        initial_model.dx,
+                        initial_model.dz,
+                        cmap='plasma'
+                    )
+                    buf_res = figure_to_bytes(fig_res)
+                    st.image(buf_res, use_column_width=True)
+                
+                col_dl3, col_dl4 = st.columns(2)
+                with col_dl3:
+                    st.download_button("下载分辨率图PNG", buf_res, 
+                                      file_name="resolution_diagonal.png", mime="image/png")
+                with col_dl4:
+                    pdf_buf_res = figure_to_bytes(fig_res, format='pdf')
+                    st.download_button("下载分辨率图PDF", pdf_buf_res, 
+                                      file_name="resolution_diagonal.pdf", mime="application/pdf")
 
 elif page == "📈 频率域处理":
     st.header("📈 频率域处理")
