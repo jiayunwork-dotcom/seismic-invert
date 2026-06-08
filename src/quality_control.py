@@ -1007,6 +1007,7 @@ class RegressionTestFramework:
             'total_count': result.total_count
         }
 
+        valid_rms = result.rms_matrix[np.isfinite(result.rms_matrix)]
         metrics_dict = {
             'best_rms': result.best_rms,
             'single_best_rms': result.single_best_rms,
@@ -1015,9 +1016,9 @@ class RegressionTestFramework:
             ),
             'completed_count': result.completed_count,
             'total_count': result.total_count,
-            'rms_matrix_mean': float(np.mean(np.isfinite(result.rms_matrix))),
-            'rms_matrix_min': float(np.min(np.isfinite(result.rms_matrix))),
-            'rms_matrix_max': float(np.max(np.isfinite(result.rms_matrix)))
+            'rms_matrix_mean': float(np.mean(valid_rms)) if len(valid_rms) > 0 else 0.0,
+            'rms_matrix_min': float(np.min(valid_rms)) if len(valid_rms) > 0 else 0.0,
+            'rms_matrix_max': float(np.max(valid_rms)) if len(valid_rms) > 0 else 0.0
         }
 
         metrics_str = json.dumps(metrics_dict, sort_keys=True, default=str)
@@ -1132,7 +1133,8 @@ def joint_sensitivity_analysis(scenario: Dict,
     start_time = time.time()
     completed = 0
 
-    single_best_rms = np.inf
+    mid_idx1 = n1 // 2
+    mid_idx2 = n2 // 2
 
     def should_stop():
         if stop_flag and stop_flag():
@@ -1177,9 +1179,6 @@ def joint_sensitivity_analysis(scenario: Dict,
                 rms = float(np.sqrt(result.metrics['final_objective'] * 2 / max(1, result.metrics['iterations'])))
                 rms_matrix[i, j] = rms
                 objective_matrix[i, j] = result.metrics['final_objective']
-
-                if rms < single_best_rms:
-                    single_best_rms = rms
             except Exception:
                 rms_matrix[i, j] = np.inf
                 objective_matrix[i, j] = np.inf
@@ -1204,11 +1203,22 @@ def joint_sensitivity_analysis(scenario: Dict,
         best_rms = float(rms_matrix[best_idx])
         best_p1 = p1_values[best_idx[0]]
         best_p2 = p2_values[best_idx[1]]
+
+        row_mid = rms_matrix[:, mid_idx2]
+        col_mid = rms_matrix[mid_idx1, :]
+
+        valid_row = row_mid[np.isfinite(row_mid)]
+        valid_col = col_mid[np.isfinite(col_mid)]
+
+        single_best_p1 = float(np.min(valid_row)) if len(valid_row) > 0 else np.inf
+        single_best_p2 = float(np.min(valid_col)) if len(valid_col) > 0 else np.inf
+        single_best_rms = float(min(single_best_p1, single_best_p2))
     else:
         best_idx = (0, 0)
         best_rms = np.inf
         best_p1 = p1_values[0]
         best_p2 = p2_values[0]
+        single_best_rms = np.inf
 
     resolution_labels = None
     if param1_name == 'grid_resolution':
