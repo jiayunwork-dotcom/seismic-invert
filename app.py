@@ -56,7 +56,8 @@ from src.visualization import (
 from src.quality_control import (
     BenchmarkScenarios, run_benchmark, analyze_convergence,
     full_sensitivity_analysis, RegressionTestFramework,
-    get_all_benchmark_scenarios, InversionParams
+    get_all_benchmark_scenarios, InversionParams,
+    joint_sensitivity_analysis, JointSensitivityResult
 )
 
 st.set_page_config(
@@ -104,6 +105,12 @@ if 'qc_convergence_result' not in st.session_state:
 
 if 'qc_sensitivity_result' not in st.session_state:
     st.session_state.qc_sensitivity_result = None
+
+if 'qc_joint_sensitivity_result' not in st.session_state:
+    st.session_state.qc_joint_sensitivity_result = None
+
+if 'qc_joint_sensitivity_stop' not in st.session_state:
+    st.session_state.qc_joint_sensitivity_stop = False
 
 if 'qc_regression_results' not in st.session_state:
     st.session_state.qc_regression_results = None
@@ -338,10 +345,14 @@ elif page == "📐 速度模型定义":
     
     model_params = st.sidebar.expander("模型参数", expanded=True)
     with model_params:
-        nx = st.number_input("水平网格数 (nx)", 10, 500, 100, 10)
-        nz = st.number_input("垂直网格数 (nz)", 10, 500, 80, 10)
-        dx = st.number_input("水平网格间距 (m)", 5.0, 100.0, 5.0, 5.0)
-        dz = st.number_input("垂直网格间距 (m)", 5.0, 100.0, 5.0, 5.0)
+        default_nx = st.session_state.get('inversion_params_nx', 100)
+        default_nz = st.session_state.get('inversion_params_nz', 80)
+        default_dx = st.session_state.get('inversion_params_dx', 5.0)
+        default_dz = st.session_state.get('inversion_params_dz', 5.0)
+        nx = st.number_input("水平网格数 (nx)", 10, 500, default_nx, 10)
+        nz = st.number_input("垂直网格数 (nz)", 10, 500, default_nz, 10)
+        dx = st.number_input("水平网格间距 (m)", 5.0, 100.0, default_dx, 5.0)
+        dz = st.number_input("垂直网格间距 (m)", 5.0, 100.0, default_dz, 5.0)
         colormap = st.selectbox("色标", ["viridis", "jet", "seismic"], 0)
         add_contours = st.checkbox("叠加等值线", False)
     
@@ -1404,9 +1415,11 @@ elif page == "🔄 反演算法":
                 else:
                     freq_scales = preset.frequency_scales
             else:
-                max_iter = st.number_input("最大迭代次数", 5, 200, 50, 5)
+                default_max_iter = st.session_state.get('inversion_params_iter', 50)
+                default_reg = st.session_state.get('inversion_params_reg', 0.01)
+                max_iter = st.number_input("最大迭代次数", 5, 200, default_max_iter, 5)
                 conv_thresh = st.number_input("收敛阈值 (相对变化)", 1e-6, 1e-2, 1e-4, format="%.1e")
-                regularization = st.number_input("正则化参数", 0.0, 1.0, 0.01, 0.001)
+                regularization = st.number_input("正则化参数", 0.0, 1.0, default_reg, 0.001)
                 if inv_type == "波形反演":
                     st.subheader("多尺度策略")
                     freq_scales_input = st.text_input("频率序列 (Hz, 逗号分隔)", "5, 10, 20, 30")
@@ -3367,6 +3380,350 @@ elif page == "✅ 反演质量控制":
             plt.tight_layout()
             buf_sens_curves = figure_to_bytes(fig_sens_curves)
             st.image(buf_sens_curves, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("🔗 联合敏感性分析")
+        st.info("分析两个参数同时变化时对反演结果的交互效应，通过网格搜索找到最优参数组合。")
+
+        joint_col1, joint_col2 = st.columns([1, 2])
+
+        with joint_col1:
+            st.markdown("#### 联合扫描配置")
+
+            joint_param1 = st.selectbox(
+                "第一个参数",
+                ["正则化系数", "网格分辨率", "迭代次数"],
+                key="joint_param1"
+            )
+
+            joint_param2 = st.selectbox(
+                "第二个参数",
+                [p for p in ["正则化系数", "网格分辨率", "迭代次数"] if p != joint_param1],
+                key="joint_param2"
+            )
+
+            param_name_map = {
+                "正则化系数": "regularization",
+                "网格分辨率": "grid_resolution",
+                "迭代次数": "max_iterations"
+            }
+
+            param_label_map = {
+                "regularization": "正则化系数",
+                "grid_resolution": "网格分辨率",
+                "max_iterations": "迭代次数"
+            }
+
+            joint_timeout = st.slider("超时时间 (秒)", 60, 300, 120, 10, key="joint_timeout")
+
+            col_joint_btn1, col_joint_btn2 = st.columns(2)
+
+            with col_joint_btn1:
+                if st.button("⚡ 运行联合扫描", type="primary", key="run_joint"):
+                    scenario_func = sens_scenario_map[sens_scenario]
+                    scenario = scenario_func()
+
+                    base_params = InversionParams(
+                        max_iterations=base_max_iter,
+                        convergence_threshold=base_conv,
+                        regularization=base_reg,
+                        inversion_type='traveltime',
+                        verbose=False
+                    )
+
+                    p1_name = param_name_map[joint_param1]
+                    p2_name = param_name_map[joint_param2]
+
+                    progress_bar = st.progress(0.0)
+                    status_text = st.empty()
+
+                    def progress_cb(progress, message):
+                        progress_bar.progress(progress)
+                        status_text.text(message)
+
+                    st.session_state.qc_joint_sensitivity_stop = False
+
+                    def stop_flag():
+                        return st.session_state.qc_joint_sensitivity_stop
+
+                    with st.spinner("正在进行联合敏感性分析，这可能需要几分钟..."):
+                        try:
+                            joint_result = joint_sensitivity_analysis(
+                                scenario,
+                                p1_name,
+                                p2_name,
+                                base_params=base_params,
+                                progress_callback=progress_cb,
+                                timeout_seconds=joint_timeout,
+                                stop_flag=stop_flag
+                            )
+                            st.session_state.qc_joint_sensitivity_result = joint_result
+
+                            if joint_result.completed_count < joint_result.total_count:
+                                st.warning(f"分析超时或中断，已完成 {joint_result.completed_count}/{joint_result.total_count} 组")
+                            else:
+                                st.success("联合敏感性分析完成！")
+                        except Exception as e:
+                            st.error(f"扫描过程中出错: {str(e)}")
+                            import traceback
+                            st.error(traceback.format_exc())
+
+            with col_joint_btn2:
+                if st.button("⏹ 中断", key="stop_joint", disabled=st.session_state.qc_joint_sensitivity_result is None):
+                    st.session_state.qc_joint_sensitivity_stop = True
+                    st.info("已请求中断，当前组完成后将停止...")
+
+        with joint_col2:
+            st.markdown("#### 参数说明")
+            st.markdown("""
+            每个参数取5个值，共25组组合：
+            - **正则化系数**: 0.001 ~ 1.0，对数均匀
+            - **网格分辨率**: 15x12, 20x16, 25x20, 30x24, 40x32
+            - **迭代次数**: 10, 20, 30, 50, 80
+            """)
+
+        if st.session_state.qc_joint_sensitivity_result is not None:
+            joint_result = st.session_state.qc_joint_sensitivity_result
+
+            st.markdown("---")
+            st.subheader("🏆 联合分析最优参数组合")
+
+            p1_label = param_label_map[joint_result.param1_name]
+            p2_label = param_label_map[joint_result.param2_name]
+
+            def get_param_display(param_name, value, labels):
+                if param_name == 'grid_resolution' and labels:
+                    return labels[int(value)]
+                elif param_name == 'regularization':
+                    return f"{value:.1e}"
+                else:
+                    return f"{int(value)}"
+
+            best_p1_display = get_param_display(
+                joint_result.param1_name,
+                joint_result.best_param1_value,
+                joint_result.resolution_labels if joint_result.param1_name == 'grid_resolution' else None
+            )
+            best_p2_display = get_param_display(
+                joint_result.param2_name,
+                joint_result.best_param2_value,
+                joint_result.resolution_labels if joint_result.param2_name == 'grid_resolution' else None
+            )
+
+            col_jb1, col_jb2, col_jb3, col_jb4 = st.columns(4)
+            with col_jb1:
+                st.metric(f"最优{p1_label}", best_p1_display)
+            with col_jb2:
+                st.metric(f"最优{p2_label}", best_p2_display)
+            with col_jb3:
+                st.metric("最小RMS残差", f"{joint_result.best_rms:.6f}")
+            with col_jb4:
+                if joint_result.single_best_rms != np.inf and joint_result.single_best_rms > 0:
+                    improvement = (joint_result.single_best_rms - joint_result.best_rms) / joint_result.single_best_rms * 100
+                    st.metric("相对改善", f"{improvement:.2f}%", delta=f"{improvement:.2f}%")
+                else:
+                    st.metric("相对改善", "N/A")
+
+            col_load_btn1, col_load_btn2, col_save_btn = st.columns([1, 1, 1])
+
+            has_single_result = st.session_state.qc_sensitivity_result is not None
+
+            with col_load_btn1:
+                if st.button("📥 应用单因素最优参数", key="load_single_best", type="secondary", disabled=not has_single_result):
+                    if has_single_result:
+                        sens_result = st.session_state.qc_sensitivity_result
+                        best_params = sens_result['best_params']
+                        best_nx, best_nz, best_dx, best_dz = best_params['resolution']
+                        st.session_state['inversion_params_reg'] = best_params['regularization']
+                        st.session_state['inversion_params_nx'] = best_nx
+                        st.session_state['inversion_params_nz'] = best_nz
+                        st.session_state['inversion_params_dx'] = best_dx
+                        st.session_state['inversion_params_dz'] = best_dz
+                        st.success("单因素最优参数已加载！")
+                    else:
+                        st.warning("请先运行单因素参数扫描")
+
+            with col_load_btn2:
+                if st.button("📥 应用联合最优参数", type="primary", key="load_joint_best"):
+                    p1_name = joint_result.param1_name
+                    p2_name = joint_result.param2_name
+
+                    param_values_map = {
+                        'regularization': np.logspace(-3, 0, 5).tolist(),
+                        'max_iterations': [10, 20, 30, 50, 80],
+                        'grid_resolution': [
+                            (15, 12, 35.0, 35.0),
+                            (20, 16, 25.0, 25.0),
+                            (25, 20, 20.0, 20.0),
+                            (30, 24, 17.0, 17.0),
+                            (40, 32, 12.5, 12.5)
+                        ]
+                    }
+
+                    best_p1_actual = param_values_map[p1_name][int(joint_result.best_index[0])]
+                    best_p2_actual = param_values_map[p2_name][int(joint_result.best_index[1])]
+
+                    for p_name, p_val in [(p1_name, best_p1_actual), (p2_name, best_p2_actual)]:
+                        if p_name == 'regularization':
+                            st.session_state['inversion_params_reg'] = float(p_val)
+                        elif p_name == 'max_iterations':
+                            st.session_state['inversion_params_iter'] = int(p_val)
+                        elif p_name == 'grid_resolution':
+                            nx, nz, dx, dz = p_val
+                            st.session_state['inversion_params_nx'] = nx
+                            st.session_state['inversion_params_nz'] = nz
+                            st.session_state['inversion_params_dx'] = dx
+                            st.session_state['inversion_params_dz'] = dz
+
+                    if 'inversion_params_reg' not in st.session_state:
+                        st.session_state['inversion_params_reg'] = 0.01
+                    if 'inversion_params_nx' not in st.session_state:
+                        st.session_state['inversion_params_nx'] = 50
+                    if 'inversion_params_nz' not in st.session_state:
+                        st.session_state['inversion_params_nz'] = 40
+                    if 'inversion_params_dx' not in st.session_state:
+                        st.session_state['inversion_params_dx'] = 10.0
+                    if 'inversion_params_dz' not in st.session_state:
+                        st.session_state['inversion_params_dz'] = 10.0
+                    if 'inversion_params_iter' not in st.session_state:
+                        st.session_state['inversion_params_iter'] = 100
+
+                    st.success("联合最优参数已加载，可在反演页面使用！")
+
+            with col_save_btn:
+                if st.button("💾 保存联合分析快照", key="save_joint_snapshot"):
+                    framework = st.session_state.qc_framework
+                    snapshot = framework.save_joint_sensitivity_snapshot(
+                        joint_result,
+                        sens_scenario
+                    )
+                    st.success(f"快照已保存: {snapshot.test_name}")
+
+            st.markdown("---")
+            st.subheader("🗺️ RMS残差二维热力图")
+
+            fig_joint_heatmap, ax = plt.subplots(figsize=(12, 8))
+
+            rms_data = joint_result.rms_matrix
+            valid_mask = np.isfinite(rms_data)
+            display_data = np.where(valid_mask, rms_data, np.nan)
+
+            p1_values = joint_result.param1_values
+            p2_values = joint_result.param2_values
+
+            if joint_result.param1_name == 'grid_resolution' and joint_result.resolution_labels:
+                p1_labels = joint_result.resolution_labels
+            else:
+                p1_labels = [f"{v:.1e}" if joint_result.param1_name == 'regularization' else f"{int(v)}" for v in p1_values]
+
+            if joint_result.param2_name == 'grid_resolution' and joint_result.resolution_labels:
+                p2_labels = joint_result.resolution_labels
+            else:
+                p2_labels = [f"{v:.1e}" if joint_result.param2_name == 'regularization' else f"{int(v)}" for v in p2_values]
+
+            im = ax.imshow(display_data, cmap='YlOrRd_r', aspect='auto',
+                          extent=[-0.5, len(p2_labels)-0.5, len(p1_labels)-0.5, -0.5])
+
+            ax.set_xticks(range(len(p2_labels)))
+            ax.set_xticklabels(p2_labels, rotation=45, ha='right')
+            ax.set_yticks(range(len(p1_labels)))
+            ax.set_yticklabels(p1_labels)
+            ax.set_xlabel(p2_label, fontweight='bold')
+            ax.set_ylabel(p1_label, fontweight='bold')
+            ax.set_title(f'RMS残差热力图 ({p1_label} vs {p2_label})', fontweight='bold', fontsize=12)
+
+            for i in range(len(p1_values)):
+                for j in range(len(p2_values)):
+                    if valid_mask[i, j]:
+                        text_color = 'white' if display_data[i, j] > np.nanmean(display_data) else 'black'
+                        text = ax.text(j, i, f"{display_data[i, j]:.3f}",
+                                      ha="center", va="center", color=text_color, fontsize=8)
+                    else:
+                        text = ax.text(j, i, "N/A",
+                                      ha="center", va="center", color="gray", fontsize=8)
+
+            best_i, best_j = joint_result.best_index
+            if valid_mask[best_i, best_j]:
+                ax.scatter(best_j, best_i, marker='*', s=500, c='gold', edgecolors='black',
+                          linewidths=2, zorder=10, label='最优组合')
+                ax.legend()
+
+            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+            cbar.set_label('RMS残差', fontweight='bold')
+
+            plt.tight_layout()
+            buf_joint_heatmap = figure_to_bytes(fig_joint_heatmap)
+            st.image(buf_joint_heatmap, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("📋 交互效应摘要")
+
+            summary_data = []
+
+            p1_name = joint_result.param1_name
+            p2_name = joint_result.param2_name
+
+            best_p1_idx, best_p2_idx = joint_result.best_index
+
+            param_values_map = {
+                'regularization': np.logspace(-3, 0, 5).tolist(),
+                'max_iterations': [10, 20, 30, 50, 80],
+                'grid_resolution': [
+                    (15, 12, 35.0, 35.0),
+                    (20, 16, 25.0, 25.0),
+                    (25, 20, 20.0, 20.0),
+                    (30, 24, 17.0, 17.0),
+                    (40, 32, 12.5, 12.5)
+                ]
+            }
+
+            best_p1_actual = param_values_map[p1_name][best_p1_idx]
+            best_p2_actual = param_values_map[p2_name][best_p2_idx]
+
+            def format_param_value(param_name, value):
+                if param_name == 'grid_resolution':
+                    return f"{value[0]}x{value[1]}"
+                elif param_name == 'regularization':
+                    return f"{value:.4f}"
+                else:
+                    return f"{int(value)}"
+
+            joint_improvement = 0.0
+            if joint_result.single_best_rms != np.inf and joint_result.single_best_rms > 0:
+                joint_improvement = (joint_result.single_best_rms - joint_result.best_rms) / joint_result.single_best_rms * 100
+
+            summary_rows = [
+                {
+                    '指标': '最优参数1',
+                    '数值': f"{param_label_map[p1_name]} = {format_param_value(p1_name, best_p1_actual)}"
+                },
+                {
+                    '指标': '最优参数2',
+                    '数值': f"{param_label_map[p2_name]} = {format_param_value(p2_name, best_p2_actual)}"
+                },
+                {
+                    '指标': '联合最优RMS',
+                    '数值': f"{joint_result.best_rms:.6f}"
+                },
+                {
+                    '指标': '单因素最优RMS',
+                    '数值': f"{joint_result.single_best_rms:.6f}" if joint_result.single_best_rms != np.inf else "N/A"
+                },
+                {
+                    '指标': '相对改善百分比',
+                    '数值': f"{joint_improvement:.2f}%" if joint_result.single_best_rms != np.inf else "N/A"
+                },
+                {
+                    '指标': '完成/总组合数',
+                    '数值': f"{joint_result.completed_count}/{joint_result.total_count}"
+                }
+            ]
+
+            summary_df = pd.DataFrame(summary_rows)
+            st.table(summary_df)
+
+            if joint_result.completed_count < joint_result.total_count:
+                st.warning(f"⚠️ 分析未完全完成，仅展示 {joint_result.completed_count}/{joint_result.total_count} 组结果")
 
     with qc_tab4:
         st.subheader("🔬 回归测试框架")

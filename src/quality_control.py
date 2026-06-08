@@ -91,6 +91,62 @@ class RegressionSnapshot:
 
 
 @dataclass
+class JointSensitivityResult:
+    """Joint parameter sensitivity analysis result."""
+    param1_name: str
+    param2_name: str
+    param1_values: List[float]
+    param2_values: List[float]
+    rms_matrix: np.ndarray
+    objective_matrix: np.ndarray
+    best_param1_value: float
+    best_param2_value: float
+    best_rms: float
+    best_index: Tuple[int, int]
+    single_best_rms: float
+    completed_count: int
+    total_count: int
+    resolution_labels: Optional[List[str]] = None
+
+    def to_dict(self) -> Dict:
+        return {
+            'param1_name': self.param1_name,
+            'param2_name': self.param2_name,
+            'param1_values': self.param1_values,
+            'param2_values': self.param2_values,
+            'rms_matrix': self.rms_matrix.tolist(),
+            'objective_matrix': self.objective_matrix.tolist(),
+            'best_param1_value': self.best_param1_value,
+            'best_param2_value': self.best_param2_value,
+            'best_rms': self.best_rms,
+            'best_index': list(self.best_index),
+            'single_best_rms': self.single_best_rms,
+            'completed_count': self.completed_count,
+            'total_count': self.total_count,
+            'resolution_labels': self.resolution_labels
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'JointSensitivityResult':
+        return cls(
+            param1_name=data['param1_name'],
+            param2_name=data['param2_name'],
+            param1_values=data['param1_values'],
+            param2_values=data['param2_values'],
+            rms_matrix=np.array(data['rms_matrix']),
+            objective_matrix=np.array(data['objective_matrix']),
+            best_param1_value=data['best_param1_value'],
+            best_param2_value=data['best_param2_value'],
+            best_rms=data['best_rms'],
+            best_index=tuple(data['best_index']),
+            single_best_rms=data['single_best_rms'],
+            completed_count=data['completed_count'],
+            total_count=data['total_count'],
+            resolution_labels=data.get('resolution_labels')
+        )
+
+
+@dataclass
 class RegressionResult:
     """Result of regression test comparison."""
     test_name: str
@@ -923,6 +979,66 @@ class RegressionTestFramework:
 
         return results
 
+    def save_joint_sensitivity_snapshot(self, result: JointSensitivityResult, scenario_name: str) -> RegressionSnapshot:
+        """
+        Save a joint sensitivity analysis result as a regression snapshot.
+
+        Parameters:
+        - result: JointSensitivityResult to save
+        - scenario_name: Name of the benchmark scenario
+
+        Returns:
+        - RegressionSnapshot saved
+        """
+        import hashlib
+
+        test_name = f"{scenario_name}_joint_{result.param1_name}_{result.param2_name}"
+        scenario_type = "sensitivity_joint"
+
+        params_dict = {
+            'param1_name': result.param1_name,
+            'param2_name': result.param2_name,
+            'param1_values': result.param1_values,
+            'param2_values': result.param2_values,
+            'best_param1_value': result.best_param1_value,
+            'best_param2_value': result.best_param2_value,
+            'best_rms': result.best_rms,
+            'completed_count': result.completed_count,
+            'total_count': result.total_count
+        }
+
+        metrics_dict = {
+            'best_rms': result.best_rms,
+            'single_best_rms': result.single_best_rms,
+            'improvement_percent': float(
+                (result.single_best_rms - result.best_rms) / max(1e-10, abs(result.single_best_rms)) * 100 if result.single_best_rms != np.inf else 0.0
+            ),
+            'completed_count': result.completed_count,
+            'total_count': result.total_count,
+            'rms_matrix_mean': float(np.mean(np.isfinite(result.rms_matrix))),
+            'rms_matrix_min': float(np.min(np.isfinite(result.rms_matrix))),
+            'rms_matrix_max': float(np.max(np.isfinite(result.rms_matrix)))
+        }
+
+        metrics_str = json.dumps(metrics_dict, sort_keys=True, default=str)
+        params_str = json.dumps(params_dict, sort_keys=True, default=str)
+        hash_str = hashlib.md5((metrics_str + params_str).encode()).hexdigest()
+
+        snapshot = RegressionSnapshot(
+            test_name=test_name,
+            scenario_type=scenario_type,
+            timestamp=time.time(),
+            parameters=params_dict,
+            metrics=metrics_dict,
+            hash=hash_str
+        )
+
+        path = self._get_snapshot_path(test_name)
+        with open(path, 'w') as f:
+            json.dump(snapshot.to_dict(), f, indent=2, default=str)
+
+        return snapshot
+
     def delete_snapshot(self, test_name: str) -> bool:
         """Delete a saved snapshot."""
         path = self._get_snapshot_path(test_name)
@@ -930,6 +1046,192 @@ class RegressionTestFramework:
             os.remove(path)
             return True
         return False
+
+
+def joint_sensitivity_analysis(scenario: Dict,
+                                param1_name: str,
+                                param2_name: str,
+                                base_params: Optional[InversionParams] = None,
+                                progress_callback: Optional[Callable] = None,
+                                timeout_seconds: float = 120.0,
+                                stop_flag: Optional[Callable[[], bool]] = None) -> JointSensitivityResult:
+    """
+    Run joint parameter sensitivity analysis by scanning two parameters simultaneously.
+
+    Parameters:
+    - scenario: Base benchmark scenario
+    - param1_name: First parameter name ('regularization', 'grid_resolution', 'max_iterations')
+    - param2_name: Second parameter name ('regularization', 'grid_resolution', 'max_iterations')
+    - base_params: Base inversion parameters
+    - progress_callback: Optional callback(progress, message)
+    - timeout_seconds: Maximum time allowed for the analysis
+    - stop_flag: Optional function that returns True to stop the analysis
+
+    Returns:
+    - JointSensitivityResult with RMS matrix and optimal parameters
+    """
+    if base_params is None:
+        base_params = InversionParams(
+            max_iterations=50,
+            convergence_threshold=1e-5,
+            regularization=0.01,
+            inversion_type='traveltime',
+            verbose=False
+        )
+
+    light_params = InversionParams(
+        max_iterations=min(base_params.max_iterations, 30),
+        convergence_threshold=max(base_params.convergence_threshold, 1e-4),
+        regularization=base_params.regularization,
+        inversion_type='traveltime',
+        verbose=False
+    )
+
+    param_values = {
+        'regularization': np.logspace(-3, 0, 5).tolist(),
+        'max_iterations': [10, 20, 30, 50, 80],
+        'grid_resolution': [
+            (15, 12, 35.0, 35.0),
+            (20, 16, 25.0, 25.0),
+            (25, 20, 20.0, 20.0),
+            (30, 24, 17.0, 17.0),
+            (40, 32, 12.5, 12.5)
+        ]
+    }
+
+    scenario_type = scenario['scenario_type']
+
+    def get_scenario_for_resolution(res_tuple):
+        nx, nz, dx, dz = res_tuple
+        if scenario_type == 'homogeneous':
+            return BenchmarkScenarios.create_homogeneous(nx=nx, nz=nz, dx=dx, dz=dz)
+        elif scenario_type == 'two_layer':
+            return BenchmarkScenarios.create_two_layer(nx=nx, nz=nz, dx=dx, dz=dz)
+        elif scenario_type == 'gradient':
+            return BenchmarkScenarios.create_gradient(nx=nx, nz=nz, dx=dx, dz=dz)
+        return scenario
+
+    def get_display_values(param_name, values):
+        if param_name == 'grid_resolution':
+            return [f"{v[0]}x{v[1]}" for v in values], [float(i) for i in range(len(values))]
+        else:
+            return [str(v) for v in values], values
+
+    p1_values = param_values[param1_name]
+    p2_values = param_values[param2_name]
+    n1 = len(p1_values)
+    n2 = len(p2_values)
+    total = n1 * n2
+
+    _, p1_display = get_display_values(param1_name, p1_values)
+    _, p2_display = get_display_values(param2_name, p2_values)
+
+    rms_matrix = np.full((n1, n2), np.inf)
+    objective_matrix = np.full((n1, n2), np.inf)
+
+    start_time = time.time()
+    completed = 0
+
+    single_best_rms = np.inf
+
+    def should_stop():
+        if stop_flag and stop_flag():
+            return True
+        if time.time() - start_time > timeout_seconds:
+            return True
+        return False
+
+    for i in range(n1):
+        for j in range(n2):
+            if should_stop():
+                break
+
+            p1_val = p1_values[i]
+            p2_val = p2_values[j]
+
+            current_scenario = scenario
+            params = InversionParams(
+                max_iterations=light_params.max_iterations,
+                convergence_threshold=light_params.convergence_threshold,
+                regularization=light_params.regularization,
+                inversion_type='traveltime',
+                verbose=False
+            )
+
+            if param1_name == 'regularization':
+                params.regularization = float(p1_val)
+            elif param1_name == 'max_iterations':
+                params.max_iterations = int(p1_val)
+            elif param1_name == 'grid_resolution':
+                current_scenario = get_scenario_for_resolution(p1_val)
+
+            if param2_name == 'regularization':
+                params.regularization = float(p2_val)
+            elif param2_name == 'max_iterations':
+                params.max_iterations = int(p2_val)
+            elif param2_name == 'grid_resolution':
+                current_scenario = get_scenario_for_resolution(p2_val)
+
+            try:
+                result = run_benchmark(current_scenario, params)
+                rms = float(np.sqrt(result.metrics['final_objective'] * 2 / max(1, result.metrics['iterations'])))
+                rms_matrix[i, j] = rms
+                objective_matrix[i, j] = result.metrics['final_objective']
+
+                if rms < single_best_rms:
+                    single_best_rms = rms
+            except Exception:
+                rms_matrix[i, j] = np.inf
+                objective_matrix[i, j] = np.inf
+
+            completed += 1
+
+            if progress_callback:
+                p1_label = f"{p1_val}" if param1_name != 'grid_resolution' else f"{p1_val[0]}x{p1_val[1]}"
+                p2_label = f"{p2_val}" if param2_name != 'grid_resolution' else f"{p2_val[0]}x{p2_val[1]}"
+                progress_callback(
+                    completed / total,
+                    f"当前第 {completed}/{total} 组: {param1_name}={p1_label}, {param2_name}={p2_label}"
+                )
+
+        if should_stop():
+            break
+
+    valid_mask = np.isfinite(rms_matrix)
+    if np.any(valid_mask):
+        masked_rms = np.where(valid_mask, rms_matrix, np.inf)
+        best_idx = np.unravel_index(np.argmin(masked_rms), rms_matrix.shape)
+        best_rms = float(rms_matrix[best_idx])
+        best_p1 = p1_values[best_idx[0]]
+        best_p2 = p2_values[best_idx[1]]
+    else:
+        best_idx = (0, 0)
+        best_rms = np.inf
+        best_p1 = p1_values[0]
+        best_p2 = p2_values[0]
+
+    resolution_labels = None
+    if param1_name == 'grid_resolution':
+        resolution_labels = [f"{r[0]}x{r[1]}" for r in p1_values]
+    elif param2_name == 'grid_resolution':
+        resolution_labels = [f"{r[0]}x{r[1]}" for r in p2_values]
+
+    return JointSensitivityResult(
+        param1_name=param1_name,
+        param2_name=param2_name,
+        param1_values=p1_display,
+        param2_values=p2_display,
+        rms_matrix=rms_matrix,
+        objective_matrix=objective_matrix,
+        best_param1_value=best_p1 if not isinstance(best_p1, tuple) else float(best_idx[0]),
+        best_param2_value=best_p2 if not isinstance(best_p2, tuple) else float(best_idx[1]),
+        best_rms=best_rms,
+        best_index=best_idx,
+        single_best_rms=single_best_rms,
+        completed_count=completed,
+        total_count=total,
+        resolution_labels=resolution_labels
+    )
 
 
 def get_all_benchmark_scenarios() -> List[Dict]:
